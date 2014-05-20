@@ -881,6 +881,10 @@ public class Channel
         return id;
     }
 
+    public MediaStream getMediaStream() {
+        return stream;
+    }
+
     /**
      * Gets the local synchronization source identifier (SSRC) to be
      * pre-announced in the case of content mixing and not in the case of RTP

@@ -8,6 +8,7 @@ package org.jitsi.videobridge;
 
 import java.util.*;
 
+import de.hpi.uni_potsdam.fb10_mp1.recording.Participant;
 import net.java.sip.communicator.impl.osgi.framework.launch.*;
 import net.java.sip.communicator.impl.protocol.jabber.*;
 import net.java.sip.communicator.impl.protocol.jabber.extensions.*;
@@ -377,6 +378,13 @@ public class ComponentImpl
 
                             channel.describe(responseChannelIQ);
                             responseContentIQ.addChannel(responseChannelIQ);
+
+
+                            // set audio and video recording:
+                            Participant participant = new Participant(channelID, focus);
+                            participant.setAudioStream(channel.getMediaStream());
+                            participant.setVideoStream(channel.getMediaStream());
+
                         }
 
                         if (responseConferenceIQ == null)
