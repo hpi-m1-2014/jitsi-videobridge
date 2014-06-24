@@ -512,6 +512,20 @@ public class Videobridge
                     responseConferenceIQ.setRecording(responseRecordingIq);
                 }
             }
+            else {
+                boolean recording
+                        = conference.setRecording(true);
+
+                ColibriConferenceIQ.Recording responseRecordingIq
+                        = new ColibriConferenceIQ.Recording(recording);
+
+                if (recording)
+                    responseRecordingIq.setPath(conference.getRecordingPath());
+
+                responseConferenceIQ.setRecording(responseRecordingIq);
+            }
+
+
 
             for (ColibriConferenceIQ.Content contentIQ
                     : conferenceIQ.getContents())

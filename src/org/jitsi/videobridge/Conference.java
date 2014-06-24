@@ -903,12 +903,13 @@ public class Conference
             boolean recordingEnabled
                     = cfg.getBoolean(Videobridge.ENABLE_MEDIA_RECORDING_PNAME,
                                      false);
-            if (!recordingEnabled)
-                return null;
+            //if (!recordingEnabled)
+                //return null;
             String path
                     = cfg.getString(Videobridge.MEDIA_RECORDING_PATH_PNAME, null);
             if (path == null)
-                return null;
+                path = "/Users/nicholas/recording";
+                //return null;
 
             this.recordingPath = path + "/" + getID()
                     + (new SimpleDateFormat("-yyMMdd-HHmmss")

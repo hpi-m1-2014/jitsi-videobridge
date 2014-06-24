@@ -6,7 +6,7 @@
     <property name="src.test" value="test" />
     <property name="output" value="classes" />
     <property name="output.test" value="test-classes" />
-    <property name="run.arg.line" value="" />
+    <property name="run.arg.line" value="--host=jitmeet.example.com --domain=jitmeet.example.com --port=5349 --secret=IfGaish6" />
     <property name="run.jvmarg.line" value="" />
     <property name="dist" value="dist" />
     <property name="doc" value="doc"/>
