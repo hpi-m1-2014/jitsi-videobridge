@@ -908,7 +908,7 @@ public class Conference
             String path
                     = cfg.getString(Videobridge.MEDIA_RECORDING_PATH_PNAME, null);
             if (path == null)
-                path = "~/recording";
+                path = "/home/deploy/recording";
                 //return null;
 
             this.recordingPath = path + "/" + getID()
