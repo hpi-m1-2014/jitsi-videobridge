@@ -911,9 +911,9 @@ public class Conference
                 path = "/home/deploy/recording";
                 //return null;
 
-            this.recordingPath = path + "/" + getID()
-                    + (new SimpleDateFormat("-yyMMdd-HHmmss")
-                            .format(new Date()));
+            this.recordingPath = path + "/"
+                    + (new SimpleDateFormat("yyyy-MM-dd.HH-mm-ss.")
+                            .format(new Date()) + getID());
         }
 
         return recordingPath;
