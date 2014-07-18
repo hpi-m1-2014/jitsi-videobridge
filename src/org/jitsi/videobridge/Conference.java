@@ -32,8 +32,8 @@ import org.osgi.framework.*;
  * @author Boris Grozev
  */
 public class Conference
-     extends PropertyChangeNotifier
-     implements PropertyChangeListener
+        extends PropertyChangeNotifier
+        implements PropertyChangeListener
 {
     /**
      * The name of the <tt>Conference</tt> property <tt>endpoints</tt> which
@@ -41,7 +41,7 @@ public class Conference
      * <tt>Conference</tt>.
      */
     public static final String ENDPOINTS_PROPERTY_NAME
-        = Conference.class.getName() + ".endpoints";
+            = Conference.class.getName() + ".endpoints";
 
     /**
      * The <tt>Logger</tt> used by the <tt>Conference</tt> class and its
@@ -73,7 +73,7 @@ public class Conference
      * The <tt>Endpoint</tt>s participating in this <tt>Conference</tt>.
      */
     private final List<WeakReference<Endpoint>> endpoints
-        = new LinkedList<WeakReference<Endpoint>>();
+            = new LinkedList<WeakReference<Endpoint>>();
 
     /**
      * The indicator which determines whether {@link #expire()} has been called
@@ -190,12 +190,12 @@ public class Conference
         for (Content content : getContents())
         {
             ColibriConferenceIQ.Content contentIQ
-                = iq.getOrCreateContent(content.getName());
+                    = iq.getOrCreateContent(content.getName());
 
             for (Channel channel : content.getChannels())
             {
                 ColibriConferenceIQ.Channel channelIQ
-                    = new ColibriConferenceIQ.Channel();
+                        = new ColibriConferenceIQ.Channel();
 
                 channel.describe(channelIQ);
                 contentIQ.addChannel(channelIQ);
@@ -233,11 +233,11 @@ public class Conference
 
         logd(
                 "The dominant speaker in conference " + getID()
-                    + " is now the endpoint "
-                    + ((dominantSpeaker == null)
+                        + " is now the endpoint "
+                        + ((dominantSpeaker == null)
                         ? "(null)"
                         : dominantSpeaker.getID())
-                    + ".");
+                        + ".");
 
         if (dominantSpeaker != null)
         {
@@ -288,7 +288,7 @@ public class Conference
                 {
                     logger.warn(
                             "Failed to expire content " + content.getName()
-                                + " of conference " + getID() + "!",
+                                    + " of conference " + getID() + "!",
                             t);
                     if (t instanceof ThreadDeath)
                         throw (ThreadDeath) t;
@@ -297,9 +297,9 @@ public class Conference
 
             logd(
                     "Expired conference " + getID() + ". The total number of"
-                        + " conferences is now "
-                        + videobridge.getConferenceCount() + ", channels "
-                        + videobridge.getChannelCount() + ".");
+                            + " conferences is now "
+                            + videobridge.getConferenceCount() + ", channels "
+                            + videobridge.getChannelCount() + ".");
         }
     }
 
@@ -416,8 +416,8 @@ public class Conference
             endpoints = new ArrayList<Endpoint>(this.endpoints.size());
 
             for (Iterator<WeakReference<Endpoint>> i
-                        = this.endpoints.iterator();
-                    i.hasNext();)
+                         = this.endpoints.iterator();
+                 i.hasNext();)
             {
                 Endpoint endpoint = i.next().get();
 
@@ -520,9 +520,9 @@ public class Conference
 
         logd(
                 "Created content " + name + " of conference " + getID()
-                    + ". The total number of conferences is now "
-                    + videobridge.getConferenceCount() + ", channels "
-                    + videobridge.getChannelCount() + ".");
+                        + ". The total number of conferences is now "
+                        + videobridge.getConferenceCount() + ", channels "
+                        + videobridge.getChannelCount() + ".");
 
         return content;
     }
@@ -548,7 +548,7 @@ public class Conference
         synchronized (endpoints)
         {
             for (Iterator<WeakReference<Endpoint>> i = endpoints.iterator();
-                    i.hasNext();)
+                 i.hasNext();)
             {
                 Endpoint e = i.next().get();
                 if (e == null)
@@ -658,7 +658,7 @@ public class Conference
                     RtpChannel rtpChannel = (RtpChannel) channel;
 
                     List<Endpoint> channelEndpointsToAskForKeyframes
-                        = rtpChannel.lastNEndpointsChanged(endpoints);
+                            = rtpChannel.lastNEndpointsChanged(endpoints);
 
                     if ((channelEndpointsToAskForKeyframes != null)
                             && !channelEndpointsToAskForKeyframes.isEmpty())
@@ -666,7 +666,7 @@ public class Conference
                         if (endpointsToAskForKeyframes == null)
                         {
                             endpointsToAskForKeyframes
-                                = new HashSet<Endpoint>();
+                                    = new HashSet<Endpoint>();
                         }
                         endpointsToAskForKeyframes.addAll(
                                 channelEndpointsToAskForKeyframes);
@@ -709,7 +709,7 @@ public class Conference
         synchronized (endpoints)
         {
             endpointsCopy
-                = new ArrayList<WeakReference<Endpoint>>(endpoints);
+                    = new ArrayList<WeakReference<Endpoint>>(endpoints);
         }
 
         int endpointsCount = endpointsCopy.size();
@@ -749,19 +749,19 @@ public class Conference
         if(!sctpConnection.isReady())
         {
             logger.warn(
-                "SCTP connection with " + endpointId + " not ready yet");
+                    "SCTP connection with " + endpointId + " not ready yet");
             return;
         }
 
         try
         {
             WebRtcDataStream dataStream
-                = sctpConnection.getDefaultDataStream();
+                    = sctpConnection.getDefaultDataStream();
 
             if(dataStream == null)
             {
                 logger.warn(
-                    "WebRtc data channel not opened yet " + endpointId);
+                        "WebRtc data channel not opened yet " + endpointId);
                 return;
             }
 
@@ -856,7 +856,7 @@ public class Conference
                 {
                     recording = false;
                     logger.warn("Failed to start media recording for conference "
-                                        + getID());
+                            + getID());
                 }
             }
 
@@ -902,18 +902,17 @@ public class Conference
                 return null;
             boolean recordingEnabled
                     = cfg.getBoolean(Videobridge.ENABLE_MEDIA_RECORDING_PNAME,
-                                     false);
-            //if (!recordingEnabled)
-                //return null;
+                    false);
+            if (!recordingEnabled)
+                return null;
             String path
                     = cfg.getString(Videobridge.MEDIA_RECORDING_PATH_PNAME, null);
             if (path == null)
-                path = "/home/deploy/recording";
-                //return null;
+                return null;
 
             this.recordingPath = path + "/"
                     + (new SimpleDateFormat("yyyy-MM-dd.HH-mm-ss.")
-                            .format(new Date()) + getID());
+                    .format(new Date()) + getID());
         }
 
         return recordingPath;
@@ -1066,7 +1065,7 @@ public class Conference
                 if (videoSsrcs.isEmpty())
                 {
                     logd("Could not find video SSRC associated with audioSsrc="
-                                 + audioSsrc);
+                            + audioSsrc);
 
                     //don't write events without proper 'ssrc' values
                     return false;

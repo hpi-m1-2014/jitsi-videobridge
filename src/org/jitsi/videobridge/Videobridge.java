@@ -41,7 +41,7 @@ public class Videobridge
      * {@link #handleColibriConferenceIQ(ColibriConferenceIQ, int)}.
      */
     private static final String DEFAULT_OPTIONS_PROPERTY_NAME
-        = "org.jitsi.videobridge.defaultOptions";
+            = "org.jitsi.videobridge.defaultOptions";
 
     /**
      * The <tt>Logger</tt> used by the <tt>Videobridge</tt> class and its
@@ -82,7 +82,7 @@ public class Videobridge
      * of the REST-like HTTP/JSON API of Jitsi Videobridge.
      */
     public static final String REST_API_PNAME
-        = "org.jitsi.videobridge." + REST_API;
+            = "org.jitsi.videobridge." + REST_API;
 
     /**
      * The XMPP API of Jitsi Videobridge.
@@ -94,28 +94,28 @@ public class Videobridge
      * of the XMPP API of Jitsi Videobridge.
      */
     public static final String XMPP_API_PNAME
-        = "org.jitsi.videobridge." + XMPP_API;
+            = "org.jitsi.videobridge." + XMPP_API;
 
     /**
      * The name of the property which controls whether media recording is
      * enabled.
      */
     static final String MEDIA_RECORDING_PATH_PNAME
-        = "org.jitsi.videobridge.MEDIA_RECORDING_PATH";
+            = "org.jitsi.videobridge.MEDIA_RECORDING_PATH";
 
     /**
-    * The name of the property which specifies the path to the directory in
-    * which media recordings will be stored.
-    */
+     * The name of the property which specifies the path to the directory in
+     * which media recordings will be stored.
+     */
     static final String ENABLE_MEDIA_RECORDING_PNAME
-        = "org.jitsi.videobridge.ENABLE_MEDIA_RECORDING";
+            = "org.jitsi.videobridge.ENABLE_MEDIA_RECORDING";
 
     /**
      * The name of the property which specifies the token used to authenticate
      * requests to enable media recording.
      */
     static final String MEDIA_RECORDING_TOKEN_PNAME
-        = "org.jitsi.videobridge.MEDIA_RECORDING_TOKEN";
+            = "org.jitsi.videobridge.MEDIA_RECORDING_TOKEN";
 
     /**
      * Logs a specific <tt>String</tt> at debug level.
@@ -143,7 +143,7 @@ public class Videobridge
      * IDs.
      */
     private final Map<String, Conference> conferences
-        = new HashMap<String, Conference>();
+            = new HashMap<String, Conference>();
 
     /**
      * Default options passed as second argument to
@@ -201,9 +201,9 @@ public class Videobridge
          */
         logd(
                 "Created conference " + conference.getID()
-                    + ". The total number of conferences is now "
-                    + getConferenceCount() + ", channels " + getChannelCount()
-                    + ".");
+                        + ". The total number of conferences is now "
+                        + getConferenceCount() + ", channels " + getChannelCount()
+                        + ".");
 
         return conference;
     }
@@ -380,25 +380,25 @@ public class Videobridge
                 if (bundleContext != null)
                 {
                     ConfigurationService cfg
-                        = ServiceUtils.getService(
-                                bundleContext,
-                                ConfigurationService.class);
+                            = ServiceUtils.getService(
+                            bundleContext,
+                            ConfigurationService.class);
 
                     if (cfg != null)
                     {
                         defaultTransportManager
-                            = cfg.getString(
-                                    Videobridge.class.getName()
+                                = cfg.getString(
+                                Videobridge.class.getName()
                                         + ".defaultTransportManager");
                     }
                 }
                 if (!IceUdpTransportPacketExtension.NAMESPACE.equals(
-                            defaultTransportManager)
+                        defaultTransportManager)
                         && !RawUdpTransportPacketExtension.NAMESPACE.equals(
-                                defaultTransportManager))
+                        defaultTransportManager))
                 {
                     defaultTransportManager
-                        = IceUdpTransportPacketExtension.NAMESPACE;
+                            = IceUdpTransportPacketExtension.NAMESPACE;
                 }
             }
             return defaultTransportManager;
@@ -418,10 +418,10 @@ public class Videobridge
      */
     public ColibriConferenceIQ handleColibriConferenceIQ(
             ColibriConferenceIQ conferenceIQ)
-        throws Exception
+            throws Exception
     {
         return handleColibriConferenceIQ(conferenceIQ,
-                                         defaultProcessingOptions);
+                defaultProcessingOptions);
     }
 
     /**
@@ -439,7 +439,7 @@ public class Videobridge
     public ColibriConferenceIQ handleColibriConferenceIQ(
             ColibriConferenceIQ conferenceIQ,
             int options)
-        throws Exception
+            throws Exception
     {
         String focus = conferenceIQ.getFrom();
         Conference conference;
@@ -490,12 +490,12 @@ public class Videobridge
             conference.describeShallow(responseConferenceIQ);
 
             ColibriConferenceIQ.Recording recordingIQ
-                = conferenceIQ.getRecording();
+                    = conferenceIQ.getRecording();
             if (recordingIQ != null)
             {
                 String tokenConfig
-                    = getConfigurationService()
-                    .getString(Videobridge.MEDIA_RECORDING_TOKEN_PNAME);
+                        = getConfigurationService()
+                        .getString(Videobridge.MEDIA_RECORDING_TOKEN_PNAME);
 
                 String tokenIQ = recordingIQ.getToken();
 
@@ -503,7 +503,7 @@ public class Videobridge
                         && tokenIQ.equals(tokenConfig))
                 {
                     boolean recording
-                        = conference.setRecording(recordingIQ.getState());
+                            = conference.setRecording(recordingIQ.getState());
 
                     ColibriConferenceIQ.Recording responseRecordingIq
                             = new ColibriConferenceIQ.Recording(recording);
@@ -512,20 +512,6 @@ public class Videobridge
                     responseConferenceIQ.setRecording(responseRecordingIq);
                 }
             }
-            else {
-                boolean recording
-                        = conference.setRecording(true);
-
-                ColibriConferenceIQ.Recording responseRecordingIq
-                        = new ColibriConferenceIQ.Recording(recording);
-
-                if (recording)
-                    responseRecordingIq.setPath(conference.getRecordingPath());
-
-                responseConferenceIQ.setRecording(responseRecordingIq);
-            }
-
-
 
             for (ColibriConferenceIQ.Content contentIQ
                     : conferenceIQ.getContents())
@@ -536,7 +522,7 @@ public class Videobridge
                  * contrast to the conference and channel elements).
                  */
                 Content content
-                    = conference.getOrCreateContent(contentIQ.getName());
+                        = conference.getOrCreateContent(contentIQ.getName());
 
                 if (content == null)
                 {
@@ -545,7 +531,7 @@ public class Videobridge
                 else
                 {
                     ColibriConferenceIQ.Content responseContentIQ
-                        = new ColibriConferenceIQ.Content(content.getName());
+                            = new ColibriConferenceIQ.Content(content.getName());
 
                     responseConferenceIQ.addContent(responseContentIQ);
 
@@ -571,14 +557,14 @@ public class Videobridge
                              * in a channel allocation request.
                              */
                             channel
-                                = (channelExpire == 0)
+                                    = (channelExpire == 0)
                                     ? null
                                     : content.createChannel();
                         }
                         else
                         {
                             channel
-                                = (RtpChannel) content.getChannel(channelID);
+                                    = (RtpChannel) content.getChannel(channelID);
                         }
 
                         if (channel == null)
@@ -589,7 +575,7 @@ public class Videobridge
                         {
                             if (channelExpire
                                     != ColibriConferenceIQ.Channel
-                                            .EXPIRE_NOT_SPECIFIED)
+                                    .EXPIRE_NOT_SPECIFIED)
                             {
                                 channel.setExpire(channelExpire);
                                 /*
@@ -610,13 +596,13 @@ public class Videobridge
                              * an RTP-level relay. Consequently, it is
                              * intuitively a sign of common sense to take the
                              * value into account as possible.
-                             * 
+                             *
                              * The attribute rtp-level-relay-type is optional.
                              * If a value is not specified, then the Channel
                              * rtpLevelRelayType is to not be changed.
                              */
                             RTPLevelRelayType rtpLevelRelayType
-                                = channelIQ.getRTPLevelRelayType();
+                                    = channelIQ.getRTPLevelRelayType();
 
                             if (rtpLevelRelayType != null)
                                 channel.setRTPLevelRelayType(rtpLevelRelayType);
@@ -663,7 +649,7 @@ public class Videobridge
                              * the channel as part of the response.
                              */
                             ColibriConferenceIQ.Channel responseChannelIQ
-                                = new ColibriConferenceIQ.Channel();
+                                    = new ColibriConferenceIQ.Channel();
 
                             channel.describe(responseChannelIQ);
                             responseContentIQ.addChannel(responseChannelIQ);
@@ -674,16 +660,16 @@ public class Videobridge
                     }
 
                     for(ColibriConferenceIQ.SctpConnection sctpConnIq
-                        : contentIQ.getSctpConnections())
+                            : contentIQ.getSctpConnections())
                     {
                         Endpoint endpoint
-                            = conference.getOrCreateEndpoint(
-                                    sctpConnIq.getEndpoint());
+                                = conference.getOrCreateEndpoint(
+                                sctpConnIq.getEndpoint());
 
                         int sctpPort = sctpConnIq.getPort();
 
                         SctpConnection sctpConn
-                            = content.getSctpConnection(endpoint);
+                                = content.getSctpConnection(endpoint);
 
                         int sctpExpire = sctpConnIq.getExpire();
 
@@ -697,13 +683,13 @@ public class Videobridge
                         if(sctpConn == null)
                         {
                             sctpConn
-                                = content.createSctpConnection(
-                                        endpoint, sctpPort);
+                                    = content.createSctpConnection(
+                                    endpoint, sctpPort);
                         }
 
                         // Expire
                         if (sctpExpire
-                            != ColibriConferenceIQ.Channel.EXPIRE_NOT_SPECIFIED)
+                                != ColibriConferenceIQ.Channel.EXPIRE_NOT_SPECIFIED)
                         {
                             sctpConn.setExpire(sctpExpire);
                         }
@@ -723,7 +709,7 @@ public class Videobridge
 
                         // Response
                         ColibriConferenceIQ.SctpConnection responseSctpIq
-                            = new ColibriConferenceIQ.SctpConnection();
+                                = new ColibriConferenceIQ.SctpConnection();
 
                         sctpConn.describe(responseSctpIq);
 
@@ -751,17 +737,17 @@ public class Videobridge
      * <tt>Videobridge</tt> is to start
      */
     void start(BundleContext bundleContext)
-        throws Exception
+            throws Exception
     {
         ConfigurationService config
-            = ServiceUtils.getService(bundleContext,
-                                      ConfigurationService.class);
+                = ServiceUtils.getService(bundleContext,
+                ConfigurationService.class);
 
         this.defaultProcessingOptions
-            = config.getInt(DEFAULT_OPTIONS_PROPERTY_NAME, 0);
+                = config.getInt(DEFAULT_OPTIONS_PROPERTY_NAME, 0);
 
         logger.info("Default videobridge processing options: 0x"
-                        + Integer.toHexString(defaultProcessingOptions));
+                + Integer.toHexString(defaultProcessingOptions));
 
         ProviderManager providerManager = ProviderManager.getInstance();
 
@@ -776,19 +762,19 @@ public class Videobridge
                 IceUdpTransportPacketExtension.ELEMENT_NAME,
                 IceUdpTransportPacketExtension.NAMESPACE,
                 new DefaultPacketExtensionProvider
-                    <IceUdpTransportPacketExtension>(
+                        <IceUdpTransportPacketExtension>(
                         IceUdpTransportPacketExtension.class));
         // Raw UDP <transport>
         providerManager.addExtensionProvider(
                 RawUdpTransportPacketExtension.ELEMENT_NAME,
                 RawUdpTransportPacketExtension.NAMESPACE,
                 new DefaultPacketExtensionProvider
-                    <RawUdpTransportPacketExtension>(
+                        <RawUdpTransportPacketExtension>(
                         RawUdpTransportPacketExtension.class));
 
         PacketExtensionProvider candidatePacketExtensionProvider
-            = new DefaultPacketExtensionProvider<CandidatePacketExtension>(
-                    CandidatePacketExtension.class);
+                = new DefaultPacketExtensionProvider<CandidatePacketExtension>(
+                CandidatePacketExtension.class);
 
         // ICE-UDP <candidate>
         providerManager.addExtensionProvider(
@@ -806,7 +792,7 @@ public class Videobridge
                 DtlsFingerprintPacketExtension.ELEMENT_NAME,
                 DtlsFingerprintPacketExtension.NAMESPACE,
                 new DefaultPacketExtensionProvider
-                    <DtlsFingerprintPacketExtension>(
+                        <DtlsFingerprintPacketExtension>(
                         DtlsFingerprintPacketExtension.class));
 
         // TODO Packet logging for ice4j is not supported at this time.
@@ -857,7 +843,7 @@ public class Videobridge
      * <tt>Videobridge</tt> is to stop
      */
     void stop(BundleContext bundleContext)
-        throws Exception
+            throws Exception
     {
         this.bundleContext = null;
     }
@@ -876,7 +862,7 @@ public class Videobridge
         if (bundleContext != null)
         {
             return ServiceUtils.getService(bundleContext,
-                                           ConfigurationService.class);
+                    ConfigurationService.class);
         }
 
         return null;

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project name="jitsi-videobridge">
 
-    <property file="local.properties" />
+    <property file="jitsi-defaults.properties" />
     <property name="src" value="src" />
     <property name="src.test" value="test" />
     <property name="output" value="classes" />
