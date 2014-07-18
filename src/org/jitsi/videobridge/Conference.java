@@ -7,20 +7,18 @@
 package org.jitsi.videobridge;
 
 import java.beans.*;
-import java.beans.beancontext.*;
 import java.io.*;
 import java.lang.ref.*;
 import java.text.*;
 import java.util.*;
 
 import net.java.sip.communicator.impl.protocol.jabber.extensions.colibri.*;
-
 import net.java.sip.communicator.util.*;
+
 import org.jitsi.service.configuration.*;
 import org.jitsi.service.libjitsi.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.service.neomedia.recording.*;
-import org.jitsi.util.*;
 import org.jitsi.util.Logger;
 import org.jitsi.util.event.*;
 import org.osgi.framework.*;
@@ -30,10 +28,11 @@ import org.osgi.framework.*;
  *
  * @author Lyubomir Marinov
  * @author Boris Grozev
+ * @author Hristo Terezov
  */
 public class Conference
-        extends PropertyChangeNotifier
-        implements PropertyChangeListener
+     extends PropertyChangeNotifier
+     implements PropertyChangeListener
 {
     /**
      * The name of the <tt>Conference</tt> property <tt>endpoints</tt> which
@@ -41,7 +40,7 @@ public class Conference
      * <tt>Conference</tt>.
      */
     public static final String ENDPOINTS_PROPERTY_NAME
-            = Conference.class.getName() + ".endpoints";
+        = Conference.class.getName() + ".endpoints";
 
     /**
      * The <tt>Logger</tt> used by the <tt>Conference</tt> class and its
@@ -52,16 +51,11 @@ public class Conference
     /**
      * Logs a specific <tt>String</tt> at debug level.
      *
-     * @param s the <tt>String</tt> to log at debug level 
+     * @param s the <tt>String</tt> to log at debug level
      */
     private static void logd(String s)
     {
-        /*
-         * FIXME Jitsi Videobridge uses the defaults of java.util.logging at the
-         * time of this writing but wants to log at debug level at all times for
-         * the time being in order to facilitate early development.
-         */
-        logger.info(s);
+        logger.debug(s);
     }
 
     /**
@@ -73,7 +67,7 @@ public class Conference
      * The <tt>Endpoint</tt>s participating in this <tt>Conference</tt>.
      */
     private final List<WeakReference<Endpoint>> endpoints
-            = new LinkedList<WeakReference<Endpoint>>();
+        = new LinkedList<WeakReference<Endpoint>>();
 
     /**
      * The indicator which determines whether {@link #expire()} has been called
@@ -88,6 +82,12 @@ public class Conference
      * the conference.
      */
     private final String focus;
+
+    /**
+     * If {@link #focus} is <tt>null</tt> the value of the last known focus is
+     * stored in this member.
+     */
+    private String lastKnownFocus;
 
     /**
      * The (unique) identifier/ID of this instance.
@@ -156,6 +156,7 @@ public class Conference
         this.videobridge = videobridge;
         this.id = id;
         this.focus = focus;
+        this.lastKnownFocus = focus;
 
         propertyChangeListener = new WeakReferencePropertyChangeListener(this);
         speechActivity = new ConferenceSpeechActivity(this);
@@ -190,12 +191,12 @@ public class Conference
         for (Content content : getContents())
         {
             ColibriConferenceIQ.Content contentIQ
-                    = iq.getOrCreateContent(content.getName());
+                = iq.getOrCreateContent(content.getName());
 
             for (Channel channel : content.getChannels())
             {
                 ColibriConferenceIQ.Channel channelIQ
-                        = new ColibriConferenceIQ.Channel();
+                    = new ColibriConferenceIQ.Channel();
 
                 channel.describe(channelIQ);
                 contentIQ.addChannel(channelIQ);
@@ -233,15 +234,18 @@ public class Conference
 
         logd(
                 "The dominant speaker in conference " + getID()
-                        + " is now the endpoint "
-                        + ((dominantSpeaker == null)
+                    + " is now the endpoint "
+                    + ((dominantSpeaker == null)
                         ? "(null)"
                         : dominantSpeaker.getID())
-                        + ".");
+                    + ".");
 
         if (dominantSpeaker != null)
         {
-            broadcastMessage("activeSpeaker:" + dominantSpeaker.getID());
+            broadcastMessageOnDataChannels(
+                    "{\"colibriClass\":\"DominantSpeakerEndpointChangeEvent\","
+                        + "\"dominantSpeakerEndpoint\":\""
+                        + dominantSpeaker.getID() + "\"}");
         }
     }
 
@@ -288,7 +292,7 @@ public class Conference
                 {
                     logger.warn(
                             "Failed to expire content " + content.getName()
-                                    + " of conference " + getID() + "!",
+                                + " of conference " + getID() + "!",
                             t);
                     if (t instanceof ThreadDeath)
                         throw (ThreadDeath) t;
@@ -297,9 +301,9 @@ public class Conference
 
             logd(
                     "Expired conference " + getID() + ". The total number of"
-                            + " conferences is now "
-                            + videobridge.getConferenceCount() + ", channels "
-                            + videobridge.getChannelCount() + ".");
+                        + " conferences is now "
+                        + videobridge.getConferenceCount() + ", channels "
+                        + videobridge.getChannelCount() + ".");
         }
     }
 
@@ -416,8 +420,8 @@ public class Conference
             endpoints = new ArrayList<Endpoint>(this.endpoints.size());
 
             for (Iterator<WeakReference<Endpoint>> i
-                         = this.endpoints.iterator();
-                 i.hasNext();)
+                        = this.endpoints.iterator();
+                    i.hasNext();)
             {
                 Endpoint endpoint = i.next().get();
 
@@ -437,6 +441,16 @@ public class Conference
             firePropertyChange(ENDPOINTS_PROPERTY_NAME, null, null);
 
         return endpoints;
+    }
+
+    /**
+     * Returns the number of endpoints in the conference.
+     *
+     * @return the number of endpoints in the conference.
+     */
+    public int getEndpointsCount()
+    {
+        return getEndpoints().size();
     }
 
     /**
@@ -476,6 +490,15 @@ public class Conference
         {
             return lastActivityTime;
         }
+    }
+
+    /**
+     * Returns the JID of the last known focus.
+     * @return the JID of the last known focus.
+     */
+    public String getLastKnowFocus()
+    {
+        return lastKnownFocus;
     }
 
     /**
@@ -520,9 +543,9 @@ public class Conference
 
         logd(
                 "Created content " + name + " of conference " + getID()
-                        + ". The total number of conferences is now "
-                        + videobridge.getConferenceCount() + ", channels "
-                        + videobridge.getChannelCount() + ".");
+                    + ". The total number of conferences is now "
+                    + videobridge.getConferenceCount() + ", channels "
+                    + videobridge.getChannelCount() + ".");
 
         return content;
     }
@@ -548,7 +571,7 @@ public class Conference
         synchronized (endpoints)
         {
             for (Iterator<WeakReference<Endpoint>> i = endpoints.iterator();
-                 i.hasNext();)
+                    i.hasNext();)
             {
                 Endpoint e = i.next().get();
                 if (e == null)
@@ -615,6 +638,7 @@ public class Conference
      * interest, the name of the property and the old and new values of that
      * property
      */
+    @Override
     public void propertyChange(PropertyChangeEvent ev)
     {
         Object source = ev.getSource();
@@ -649,16 +673,10 @@ public class Conference
                 endpoints = speechActivity.getEndpoints();
                 for (Channel channel : content.getChannels())
                 {
-                    //FIXME: remove instance of
-                    if (!(channel instanceof RtpChannel))
-                    {
-                        continue;
-                    }
-
                     RtpChannel rtpChannel = (RtpChannel) channel;
 
                     List<Endpoint> channelEndpointsToAskForKeyframes
-                            = rtpChannel.lastNEndpointsChanged(endpoints);
+                        = rtpChannel.speechActivityEndpointsChanged(endpoints);
 
                     if ((channelEndpointsToAskForKeyframes != null)
                             && !channelEndpointsToAskForKeyframes.isEmpty())
@@ -666,7 +684,7 @@ public class Conference
                         if (endpointsToAskForKeyframes == null)
                         {
                             endpointsToAskForKeyframes
-                                    = new HashSet<Endpoint>();
+                                = new HashSet<Endpoint>();
                         }
                         endpointsToAskForKeyframes.addAll(
                                 channelEndpointsToAskForKeyframes);
@@ -702,75 +720,19 @@ public class Conference
      *
      * @param msg the message to be advertised across conference peers.
      */
-    private void broadcastMessage(String msg)
+    private void broadcastMessageOnDataChannels(String msg)
     {
-        ArrayList<WeakReference<Endpoint>> endpointsCopy;
-
-        synchronized (endpoints)
-        {
-            endpointsCopy
-                    = new ArrayList<WeakReference<Endpoint>>(endpoints);
-        }
-
-        int endpointsCount = endpointsCopy.size();
-
-        if(endpointsCount == 0)
-            return;
-
-        for(WeakReference<Endpoint> endpoint : endpoints)
-        {
-            Endpoint toNotify = endpoint.get();
-            if(toNotify == null)
-                continue;
-
-            sendMessageOnDataChannel(toNotify, msg);
-        }
+        for (Endpoint endpoint : getEndpoints())
+            endpoint.sendMessageOnDataChannel(msg);
     }
 
     /**
-     * Sends given <tt>String</tt> <tt>msg</tt> to given <tt>endpoint</tt>
-     * over default data channel.
-     *
-     * @param endpoint message recipient.
-     * @param msg message text to be sent.
+     * Sets the JID of the last known focus.
+     * @param jid the JID of the last known focus.
      */
-    private void sendMessageOnDataChannel(Endpoint endpoint, String msg)
+    public void setLastKnownFocus(String jid)
     {
-        String endpointId = endpoint.getID();
-
-        SctpConnection sctpConnection = endpoint.getSctpConnection();
-
-        if(sctpConnection == null)
-        {
-            logger.warn("No SCTP connection with " + endpointId);
-            return;
-        }
-
-        if(!sctpConnection.isReady())
-        {
-            logger.warn(
-                    "SCTP connection with " + endpointId + " not ready yet");
-            return;
-        }
-
-        try
-        {
-            WebRtcDataStream dataStream
-                    = sctpConnection.getDefaultDataStream();
-
-            if(dataStream == null)
-            {
-                logger.warn(
-                        "WebRtc data channel not opened yet " + endpointId);
-                return;
-            }
-
-            dataStream.sendString(msg);
-        }
-        catch (IOException e)
-        {
-            logger.error("SCTP error, endpoint: " + endpointId, e);
-        }
+        lastKnownFocus = jid;
     }
 
     /**
@@ -789,8 +751,14 @@ public class Conference
             synchronized (contents)
             {
                 for (Content content : contents)
+                {
+                    MediaType mediaType = content.getMediaType();
+                    if (!MediaType.VIDEO.equals(mediaType)
+                            && !MediaType.AUDIO.equals(mediaType))
+                        continue;
                     if (!content.isRecording())
                         recording = false;
+                }
             }
         }
         if (this.recording != recording)
@@ -835,6 +803,13 @@ public class Conference
                 Synchronizer synchronizer = null;
                 for (Content content : contents)
                 {
+                    MediaType mediaType = content.getMediaType();
+                    if (!MediaType.VIDEO.equals(mediaType)
+                            && !MediaType.AUDIO.equals(mediaType))
+                    {
+                        continue;
+                    }
+
                     if (!failedToStart)
                         failedToStart |= !content.setRecording(true, path);
                     if (failedToStart)
@@ -846,7 +821,11 @@ public class Conference
                         synchronizer = content.getRecorder().getSynchronizer();
                     }
                     else
-                        content.getRecorder().setSynchronizer(synchronizer);
+                    {
+                        Recorder recorder = content.getRecorder();
+                        if (recorder != null)
+                            recorder.setSynchronizer(synchronizer);
+                    }
 
                     content.feedKnownSsrcsToSynchronizer();
                 }
@@ -856,7 +835,7 @@ public class Conference
                 {
                     recording = false;
                     logger.warn("Failed to start media recording for conference "
-                            + getID());
+                                        + getID());
                 }
             }
 
@@ -868,6 +847,12 @@ public class Conference
 
                 for (Content content : contents)
                 {
+                    MediaType mediaType = content.getMediaType();
+                    if (!MediaType.VIDEO.equals(mediaType)
+                            && !MediaType.AUDIO.equals(mediaType))
+                    {
+                        continue;
+                    }
                     content.setRecording(false, null);
                 }
 
@@ -902,7 +887,7 @@ public class Conference
                 return null;
             boolean recordingEnabled
                     = cfg.getBoolean(Videobridge.ENABLE_MEDIA_RECORDING_PNAME,
-                    false);
+                                     false);
             if (!recordingEnabled)
                 return null;
             String path
@@ -912,7 +897,7 @@ public class Conference
 
             this.recordingPath = path + "/"
                     + (new SimpleDateFormat("yyyy-MM-dd.HH-mm-ss.")
-                    .format(new Date()) + getID());
+                            .format(new Date()) + getID());
         }
 
         return recordingPath;
@@ -976,61 +961,17 @@ public class Conference
     MediaService getMediaService()
     {
         MediaService mediaService
-                = ServiceUtils.getService(getBundleContext(), MediaService.class);
+            = ServiceUtils.getService(getBundleContext(), MediaService.class);
 
-    /*
-     * TODO For an unknown reason, ServiceUtils.getService fails to retrieve
-     * the MediaService implementation. In the form of a temporary
-     * workaround, get it through LibJitsi.
-     */
+        /*
+         * TODO For an unknown reason, ServiceUtils.getService fails to retrieve
+         * the MediaService implementation. In the form of a temporary
+         * workaround, get it through LibJitsi.
+         */
         if (mediaService == null)
             mediaService = LibJitsi.getMediaService();
 
         return mediaService;
-    }
-
-
-    /**
-     * XXX REMOVE
-     * Finds all the SSRCs received on all video <tt>Channel</tt> in this
-     * <tt>Conference</tt>, which are associated in an
-     * <tt>Endpoint</tt> with an audio <tt>Channel</tt> on which
-     * <tt>audioSsrc</tt> is received. If none is found, returns <tt>-1</tt>.
-     *
-     * Assumes that <tt>audioSsrc</tt> can be received on no more than a single
-     * <tt>Channel</tt>.
-     *
-     * @param audioSsrc the audio SSRC.
-     * @return a <tt>List</tt> of received video SSRCs associated with
-     * <tt>audioSsrc</tt>
-     */
-    private List<Long> getVideoSsrcs(long audioSsrc)
-    {
-        List<Long> videoSsrcs = new LinkedList<Long>();
-        Channel audioChannel = null;
-
-        for(Content c : getContents())
-        {
-            if (MediaType.AUDIO.equals(c.getMediaType())
-                    && (audioChannel = c.findChannel(audioSsrc)) != null)
-                break;
-        }
-
-        if (audioChannel != null)
-        {
-            Endpoint endpoint = audioChannel.getEndpoint();
-            if (endpoint != null)
-            {
-                for (Channel channel : endpoint.getChannels(MediaType.VIDEO))
-                {
-                    if (channel instanceof RtpChannel)
-                        for (int ssrc : ((RtpChannel) channel).getReceiveSSRCs())
-                            videoSsrcs.add(0xffffffffL & ssrc);
-                }
-            }
-        }
-
-        return videoSsrcs;
     }
 
     /**
@@ -1061,18 +1002,33 @@ public class Conference
                     .equals(event.getType()))
             {
                 long audioSsrc = event.getAudioSsrc();
-                List<Long> videoSsrcs = getVideoSsrcs(audioSsrc);
-                if (videoSsrcs.isEmpty())
+                Endpoint endpoint = findEndpointByReceiveSSRC(audioSsrc,
+                                                              MediaType.AUDIO);
+                long videoSsrc = -1;
+                if (endpoint != null)
+                {
+                    // use the first SSRC found
+                    for (Channel c : endpoint.getChannels(MediaType.VIDEO))
+                    {
+                        int[] ssrcs = ((RtpChannel) c).getReceiveSSRCs();
+                        if (ssrcs != null && ssrcs.length > 0)
+                        {
+                            videoSsrc = ssrcs[0] & 0xffffffffL;
+                            break;
+                        }
+                    }
+                }
+
+                if (videoSsrc == -1)
                 {
                     logd("Could not find video SSRC associated with audioSsrc="
-                            + audioSsrc);
+                                 + audioSsrc);
 
                     //don't write events without proper 'ssrc' values
                     return false;
                 }
 
-                //for the moment just use the first SSRC
-                event.setSsrc(videoSsrcs.get(0));
+                event.setSsrc(videoSsrc);
             }
             return handler.handleEvent(event);
         }
