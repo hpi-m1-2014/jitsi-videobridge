@@ -101,6 +101,16 @@ public class RtpChannel
     private long lastKnownPacketsNB = 0;
 
     /**
+     * The last known number of received bytes.
+     */
+    private long lastKnownReceivedBytes = 0;
+
+    /**
+     * The last known number of sent bytes.
+     */
+    private long lastKnownSentBytes = 0;
+
+    /**
      * The maximum number of video RTP stream to be sent from Jitsi Videobridge
      * to the endpoint associated with this video <tt>Channel</tt>.
      */
@@ -750,6 +760,32 @@ public class RtpChannel
     }
 
     /**
+     * Returns the received and sent number of bytes since the last time the
+     * method was called.
+     * @return the received and sent number of bytes.
+     */
+	public long getNBBytes()
+    {
+        long bytes = 0;
+        long newBytes = stream.getMediaStreamStats().getNbReceivedBytes();
+        if(newBytes > lastKnownReceivedBytes)
+        {
+            bytes += newBytes - lastKnownReceivedBytes;
+            lastKnownReceivedBytes = newBytes;
+        }
+
+        newBytes = stream.getMediaStreamStats().getNbSentBytes();
+
+        if(newBytes > lastKnownSentBytes)
+        {
+            bytes += newBytes - lastKnownSentBytes;
+            lastKnownSentBytes = newBytes;
+        }
+
+        return bytes;
+    }
+
+    /**
      * Returns a <tt>MediaService</tt> implementation (if any).
      *
      * @return a <tt>MediaService</tt> implementation (if any)
@@ -831,6 +867,18 @@ public class RtpChannel
     }
 
     /**
+     * Returns the <tt>MediaStream</tt> which this <tt>Channel</tt> adapts to
+     * the terms of Jitsi Videobridge and which adapts this <tt>Channel</tt>
+     * to the terms of <tt>neomedia</tt>.
+     *
+     * @return the <tt>MediaStream</tt> instance
+     */
+    public MediaStream getStream()
+    {
+        return stream;
+    }
+
+    /**
      * Determines whether a specific <tt>Channel</tt> is within the set of
      * <tt>Channel</tt>s limitted by {@link #lastN} i.e. whether the RTP video
      * streams of the specified channel are to be sent to the remote endpoint of
@@ -839,7 +887,7 @@ public class RtpChannel
      * @param channel
      * @return
      */
-    private boolean isInLastN(Channel channel)
+    public boolean isInLastN(Channel channel)
     {
         Integer lastNInteger = this.lastN;
 
