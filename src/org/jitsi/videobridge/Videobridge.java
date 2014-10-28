@@ -6,22 +6,19 @@
  */
 package org.jitsi.videobridge;
 
-import java.lang.management.*;
-import java.text.*;
 import java.util.*;
 
 import net.java.sip.communicator.impl.protocol.jabber.extensions.*;
 import net.java.sip.communicator.impl.protocol.jabber.extensions.colibri.*;
 import net.java.sip.communicator.impl.protocol.jabber.extensions.jingle.*;
-import net.java.sip.communicator.util.*;
 
 import org.ice4j.ice.harvest.*;
 import org.ice4j.stack.*;
 import org.jitsi.service.configuration.*;
-import org.jitsi.service.neomedia.*;
-import org.jitsi.util.Logger;
-import org.jitsi.videobridge.stats.*;
-import org.jitsi.videobridge.stats.transport.*;
+import org.jitsi.util.*;
+import org.jitsi.videobridge.osgi.*;
+import org.jitsi.videobridge.pubsub.*;
+import org.jitsi.videobridge.sim.*;
 import org.jitsi.videobridge.xmpp.*;
 import org.jivesoftware.smack.provider.*;
 import org.jivesoftware.smackx.pubsub.*;
@@ -34,14 +31,11 @@ import org.osgi.framework.*;
  *
  * @author Lyubomir Marinov
  * @author Hristo Terezov
+ * @author Boris Grozev
  */
-public class Videobridge implements StatsGenerator
+public class Videobridge
 {
-    /**
-     * The XML namespace of the <tt>TransportManager</tt> type to be initialized
-     * by <tt>Channel</tt> by default.
-     */
-    private static String defaultTransportManager;
+    public static final String COLIBRI_CLASS = "colibriClass";
 
     /**
      * The name of configuration property used to specify default processing
@@ -52,18 +46,37 @@ public class Videobridge implements StatsGenerator
         = "org.jitsi.videobridge.defaultOptions";
 
     /**
+     * The XML namespace of the <tt>TransportManager</tt> type to be initialized
+     * by <tt>Channel</tt> by default.
+     */
+    private static String defaultTransportManager;
+
+    /**
+    * The name of the property which specifies the path to the directory in
+    * which media recordings will be stored.
+    */
+    static final String ENABLE_MEDIA_RECORDING_PNAME
+        = "org.jitsi.videobridge.ENABLE_MEDIA_RECORDING";
+
+    /**
      * The <tt>Logger</tt> used by the <tt>Videobridge</tt> class and its
      * instances to print debug information.
      */
     private static final Logger logger = Logger.getLogger(Videobridge.class);
 
     /**
-     * The optional flag which specifies to
-     * {@link #handleColibriConferenceIQ(ColibriConferenceIQ, int)} that
-     * <tt>ColibriConferenceIQ</tt>s without an associated conference focus are
-     * allowed.
+     * The name of the property which controls whether media recording is
+     * enabled.
      */
-    public static final int OPTION_ALLOW_NO_FOCUS = 1;
+    static final String MEDIA_RECORDING_PATH_PNAME
+        = "org.jitsi.videobridge.MEDIA_RECORDING_PATH";
+
+    /**
+     * The name of the property which specifies the token used to authenticate
+     * requests to enable media recording.
+     */
+    static final String MEDIA_RECORDING_TOKEN_PNAME
+        = "org.jitsi.videobridge.MEDIA_RECORDING_TOKEN";
 
     /**
      * The optional flag which specifies to
@@ -72,6 +85,14 @@ public class Videobridge implements StatsGenerator
      * focus that created the conference).
      */
     public static final int OPTION_ALLOW_ANY_FOCUS = 2;
+
+    /**
+     * The optional flag which specifies to
+     * {@link #handleColibriConferenceIQ(ColibriConferenceIQ, int)} that
+     * <tt>ColibriConferenceIQ</tt>s without an associated conference focus are
+     * allowed.
+     */
+    public static final int OPTION_ALLOW_NO_FOCUS = 1;
 
     /**
      * The pseudo-random generator which is to be used when generating
@@ -93,6 +114,20 @@ public class Videobridge implements StatsGenerator
         = "org.jitsi.videobridge." + REST_API;
 
     /**
+     * The name of the property which specifies the FQN name of the RTCP
+     * strategy to use when there are less than 3 participants.
+     */
+    static final String RTCP_TERMINATION_FALLBACK_STRATEGY_PNAME
+            = "org.jitsi.videobridge.rtcp.fallbackStrategy";
+
+    /**
+     * The name of the property which specifies the FQN name of the RTCP
+     * strategy to use by default.
+     */
+    static final String RTCP_TERMINATION_STRATEGY_PNAME
+            = "org.jitsi.videobridge.rtcp.strategy";
+
+    /**
      * The XMPP API of Jitsi Videobridge.
      */
     public static final String XMPP_API = "xmpp";
@@ -104,99 +139,10 @@ public class Videobridge implements StatsGenerator
     public static final String XMPP_API_PNAME
         = "org.jitsi.videobridge." + XMPP_API;
 
-    /**
-     * The name of the property which controls whether media recording is
-     * enabled.
-     */
-    static final String MEDIA_RECORDING_PATH_PNAME
-        = "org.jitsi.videobridge.MEDIA_RECORDING_PATH";
-
-    /**
-    * The name of the property which specifies the path to the directory in
-    * which media recordings will be stored.
-    */
-    static final String ENABLE_MEDIA_RECORDING_PNAME
-        = "org.jitsi.videobridge.ENABLE_MEDIA_RECORDING";
-
-    /**
-     * The name of the property which specifies the token used to authenticate
-     * requests to enable media recording.
-     */
-    static final String MEDIA_RECORDING_TOKEN_PNAME
-        = "org.jitsi.videobridge.MEDIA_RECORDING_TOKEN";
-
-    /**
-     * The name of the property which enables generating and sending statistics
-     * about the videobridge.
-     */
-    private static final String ENABLE_STATISTICS
-        = "org.jitsi.videobridge.ENABLE_STATISTICS";
-
-    /**
-     * The name of the property which specifies the transport for
-     * sending statistics about the videobridge.
-     */
-    private static final String STATISTICS_TRANSPORT
-        = "org.jitsi.videobridge.STATISTICS_TRANSPORT";
-
-    /**
-     * The name of the property which specifies the interval in milliseconds for
-     * sending statistics about the videobridge.
-     */
-    private static final String STATISTICS_INTERVAL
-        = "org.jitsi.videobridge.STATISTICS_INTERVAL";
-
-    /**
-     * The name of the property which specifies the name of the service that
-     * will receive the statistics about the videobridge if PubSub transport is
-     * used to send statistics.
-     */
-    private static final String PUBSUB_SERVICE
-        = "org.jitsi.videobridge.PUBSUB_SERVICE";
-
-    /**
-     * The name of the property which specifies the name of the PubSub node that
-     * will receive the statistics about the videobridge if PubSub transport is
-     * used to send statistics.
-     */
-    private static final String PUBSUB_NODE
-        = "org.jitsi.videobridge.PUBSUB_NODE";
-
-    /**
-     * The default value for statistics transport.
-     */
-    private static final String DEFAULT_STAT_TRANSPORT = "pubsub";
-
-    /**
-     * The value for PubSub statistics transport.
-     */
-    private static final String STAT_TRANSPORT_PUBSUB = "pubsub";
-
-    /**
-     * The value for COLIBRI statistics transport.
-     */
-    private static final String STAT_TRANSPORT_COLIBRI = "colibri";
-
-    /**
-     * The default value for statistics interval.
-     */
-    private static final int DEFAULT_STAT_INTERVAL = 1000;
-
-    /**
-     * The name of the property which specifies the FQN name of the RTCP
-     * strategy to use by default.
-     */
-    static final String RTCP_TERMINATION_STRATEGY_PNAME
-            = "org.jitsi.videobridge.rtcp.strategy";
-
-    /**
-     * Logs a specific <tt>String</tt> at debug level.
-     *
-     * @param s the <tt>String</tt> to log at debug level
-     */
-    private static void logd(String s)
+    public static Collection<Videobridge> getVideobridges(
+            BundleContext bundleContext)
     {
-        logger.debug(s);
+        return ServiceUtils2.getServices(bundleContext, Videobridge.class);
     }
 
     /**
@@ -217,29 +163,6 @@ public class Videobridge implements StatsGenerator
      * {@link #handleColibriConferenceIQ(ColibriConferenceIQ, int)}
      */
     private int defaultProcessingOptions;
-
-    /**
-     * Interval in milliseconds for stats generation.
-     */
-    private int statsInterval = -1;
-
-    /**
-     * Listener for <tt>ComponentImpl</tt>
-     */
-    private ServiceListener serviceListener = new ServiceListener()
-    {
-
-        @Override
-        public void serviceChanged(ServiceEvent event)
-        {
-            if(!getComponents().isEmpty())
-            {
-                startStatistics();
-                bundleContext.removeServiceListener(this);
-            }
-
-        }
-    };
 
     /**
      * Initializes a new <tt>Videobridge</tt> instance.
@@ -289,11 +212,14 @@ public class Videobridge implements StatsGenerator
          * outside synchronized blocks in order to reduce the risks of causing
          * deadlocks.
          */
-        logd(
-                "Created conference " + conference.getID()
-                    + ". The total number of conferences is now "
-                    + getConferenceCount() + ", channels " + getChannelCount()
-                    + ".");
+        if (logger.isInfoEnabled())
+        {
+            logger.info(
+                    "Created conference " + conference.getID()
+                        + ". The total number of conferences is now "
+                        + getConferenceCount() + ", channels "
+                        + getChannelCount() + ".");
+        }
 
         return conference;
     }
@@ -410,7 +336,7 @@ public class Videobridge implements StatsGenerator
              */
             String conferenceFocus = conference.getFocus();
 
-            if ((conferenceFocus == null) || conferenceFocus.equals(focus))
+            if ((focus == null) || focus.equals(conferenceFocus))
             {
                 // It seems the conference is still active.
                 conference.touch();
@@ -453,6 +379,26 @@ public class Videobridge implements StatsGenerator
     }
 
     /**
+     * Returns the <tt>ConfigurationService</tt> used by this
+     * <tt>Videobridge</tt>.
+     *
+     * @return the <tt>ConfigurationService</tt> used by this
+     * <tt>Videobridge</tt>.
+     */
+    ConfigurationService getConfigurationService()
+    {
+        BundleContext bundleContext = getBundleContext();
+
+        if (bundleContext != null)
+        {
+            return ServiceUtils2.getService(bundleContext,
+                                           ConfigurationService.class);
+        }
+
+        return null;
+    }
+
+    /**
      * Gets the XML namespace of the <tt>TransportManager</tt> type to be
      * initialized by <tt>Channel</tt> by default.
      *
@@ -470,7 +416,7 @@ public class Videobridge implements StatsGenerator
                 if (bundleContext != null)
                 {
                     ConfigurationService cfg
-                        = ServiceUtils.getService(
+                        = ServiceUtils2.getService(
                                 bundleContext,
                                 ConfigurationService.class);
 
@@ -510,8 +456,8 @@ public class Videobridge implements StatsGenerator
             ColibriConferenceIQ conferenceIQ)
         throws Exception
     {
-        return handleColibriConferenceIQ(conferenceIQ,
-                                         defaultProcessingOptions);
+        return
+            handleColibriConferenceIQ(conferenceIQ, defaultProcessingOptions);
     }
 
     /**
@@ -649,7 +595,7 @@ public class Videobridge implements StatsGenerator
                 {
                     // Set the RTCP termination strategy.
                     if (strategyFQN != null)
-                        content.setRTCPTerminationStrategyFromFQN(strategyFQN);
+                        content.setRTCPTerminationStrategyFQN(strategyFQN);
 
                     ColibriConferenceIQ.Content responseContentIQ
                         = new ColibriConferenceIQ.Content(content.getName());
@@ -661,6 +607,7 @@ public class Videobridge implements StatsGenerator
                     {
                         String channelID = channelIQ.getID();
                         int channelExpire = channelIQ.getExpire();
+                        String channelBundleId = channelIQ.getChannelBundleId();
                         RtpChannel channel;
 
                         /*
@@ -680,7 +627,7 @@ public class Videobridge implements StatsGenerator
                             channel
                                 = (channelExpire == 0)
                                     ? null
-                                    : content.createChannel();
+                                    : content.createRtpChannel(channelBundleId);
                         }
                         else
                         {
@@ -728,11 +675,20 @@ public class Videobridge implements StatsGenerator
                             if (rtpLevelRelayType != null)
                                 channel.setRTPLevelRelayType(rtpLevelRelayType);
 
-                            /*
-                             * The attribute endpoint is optional. If a value is
-                             * not specified, then the Channel endpoint is to
-                             * not be changed.
-                             */
+                            if (channelBundleId != null)
+                            {
+                                TransportManager transportManager
+                                    = conference.getTransportManager(
+                                            channelBundleId,
+                                            true);
+
+                                transportManager.addChannel(channel);
+                            }
+
+                            // endpoint
+                            // The attribute endpoint is optional. If a value is
+                            // not specified, then the Channel endpoint is to
+                            // not be changed.
                             String endpoint = channelIQ.getEndpoint();
 
                             if (endpoint != null)
@@ -747,6 +703,11 @@ public class Videobridge implements StatsGenerator
 
                             if (lastN != null)
                                 channel.setLastN(lastN);
+
+                            Boolean adaptiveLastN
+                                    = channelIQ.getAdaptiveLastN();
+                            if (adaptiveLastN != null)
+                                channel.setAdaptiveLastN(adaptiveLastN);
 
                             /*
                              * XXX The attribute initiator is optional. If a
@@ -765,6 +726,40 @@ public class Videobridge implements StatsGenerator
 
                             channel.setDirection(channelIQ.getDirection());
 
+                            if (channel instanceof VideoChannel)
+                            {
+                                List<SourceGroupPacketExtension> sourceGroups
+                                    = channelIQ.getSourceGroups();
+                                VideoChannel videoChannel
+                                    = (VideoChannel) channel;
+
+                                if (sourceGroups != null)
+                                {
+                                    SimulcastManager manager = videoChannel
+                                            .getSimulcastManager();
+
+                                    SortedSet<SimulcastLayer> layers =
+                                            SimulcastLayersFactory
+                                                    .fromSourceGroups(
+                                                            sourceGroups,
+                                                            manager);
+
+                                    manager.setSimulcastLayers(layers);
+                                }
+
+                                Integer receivingSimulcastLayer
+                                    = channelIQ.getReceivingSimulcastLayer();
+
+                                if (receivingSimulcastLayer != null)
+                                {
+                                    // TODO(gp) remove the receiving simulcast
+                                    // layer attribute from the COLIBRI stanza. It
+                                    // was introduced in the very early stages of
+                                    // simulcast development and it is no longer
+                                    // required.
+                                }
+                            }
+
                             /*
                              * Provide (a description of) the current state of
                              * the channel as part of the response.
@@ -780,55 +775,90 @@ public class Videobridge implements StatsGenerator
                             break;
                     }
 
-                    for(ColibriConferenceIQ.SctpConnection sctpConnIq
-                        : contentIQ.getSctpConnections())
+                    for (ColibriConferenceIQ.SctpConnection sctpConnIq
+                            : contentIQ.getSctpConnections())
                     {
-                        Endpoint endpoint
-                            = conference.getOrCreateEndpoint(
-                                    sctpConnIq.getEndpoint());
+                        String id = sctpConnIq.getID();
+                        String endpointID = sctpConnIq.getEndpoint();
+                        SctpConnection sctpConn;
+                        int expire = sctpConnIq.getExpire();
+                        String channelBundleId = sctpConnIq.getChannelBundleId();
 
-                        int sctpPort = sctpConnIq.getPort();
-
-                        SctpConnection sctpConn
-                            = content.getSctpConnection(endpoint);
-
-                        int sctpExpire = sctpConnIq.getExpire();
-
-                        if(sctpConn == null && sctpExpire == 0)
+                        // No ID means SCTP connection is to either be created
+                        // or focus uses endpoint identity.
+                        if (id == null)
                         {
-                            // Expire request for already expired/non-existing
-                            // SCTP connection
+                            // FIXME The method
+                            // Content.getSctpConnection(Endpoint) is annotated
+                            // as deprecated but SctpConnection identification
+                            // by Endpoint (ID) is to continue to be supported
+                            // for legacy purposes.
+                            Endpoint endpoint
+                                = (endpointID == null)
+                                    ? null
+                                    : conference.getOrCreateEndpoint(
+                                            endpointID);
+
+                            sctpConn = content.getSctpConnection(endpoint);
+                            if (sctpConn == null)
+                            {
+                                // Expire an expired/non-existing SCTP
+                                // connection.
+                                if (expire == 0)
+                                    continue;
+
+                                int sctpPort = sctpConnIq.getPort();
+
+                                sctpConn
+                                    = content.createSctpConnection(
+                                            endpoint,
+                                            sctpPort,
+                                            channelBundleId);
+                            }
+                        }
+                        else
+                        {
+                            sctpConn = content.getSctpConnection(id);
+                            // Expire an expired/non-existing SCTP connection.
+                            if (sctpConn == null && expire == 0)
+                                continue;
+                            // endpoint
+                            if (endpointID != null)
+                                sctpConn.setEndpoint(endpointID);
+                        }
+
+                        // expire
+                        if (expire
+                                != ColibriConferenceIQ.Channel
+                                        .EXPIRE_NOT_SPECIFIED)
+                        {
+                            sctpConn.setExpire(expire);
+                        }
+
+                        // Check if SCTP connection has expired.
+                        if (sctpConn.isExpired())
                             continue;
-                        }
 
-                        if(sctpConn == null)
-                        {
-                            sctpConn
-                                = content.createSctpConnection(
-                                        endpoint, sctpPort);
-                        }
-
-                        // Expire
-                        if (sctpExpire
-                            != ColibriConferenceIQ.Channel.EXPIRE_NOT_SPECIFIED)
-                        {
-                            sctpConn.setExpire(sctpExpire);
-                        }
-
-                        // Check if SCTP connection has expired
-                        if(sctpConn.isExpired())
-                            continue;
-
-                        // Initiator
+                        // initiator
                         Boolean initiator = sctpConnIq.isInitiator();
 
                         if (initiator != null)
                             sctpConn.setInitiator(initiator);
 
-                        // Transport
+                        // transport
                         sctpConn.setTransport(sctpConnIq.getTransport());
 
-                        // Response
+                        if (channelBundleId != null)
+                        {
+                            TransportManager transportManager
+                                = conference.getTransportManager(
+                                        channelBundleId,
+                                        true);
+
+                            transportManager.addChannel(sctpConn);
+                        }
+
+                        // response
                         ColibriConferenceIQ.SctpConnection responseSctpIq
                             = new ColibriConferenceIQ.SctpConnection();
 
@@ -841,9 +871,24 @@ public class Videobridge implements StatsGenerator
                 if (responseConferenceIQ == null)
                     break;
             }
+            for (ColibriConferenceIQ.ChannelBundle channelBundleIq
+                    : conferenceIQ.getChannelBundles())
+            {
+                TransportManager transportManager
+                    = conference.getTransportManager(channelBundleIq.getId());
+                IceUdpTransportPacketExtension transportIq
+                    = channelBundleIq.getTransport();
+
+                if (transportManager != null && transportIq != null)
+                {
+                    transportManager.startConnectivityEstablishment(
+                            transportIq);
+                }
+            }
         }
 
-        // Update the endpoint information.
+        // Update the endpoint information of Videobridge with the endpoint
+        // information of the IQ.
         if (conference != null)
         {
             for (ColibriConferenceIQ.Endpoint colibriEndpoint
@@ -851,8 +896,10 @@ public class Videobridge implements StatsGenerator
             {
                 conference.updateEndpoint(colibriEndpoint);
             }
-        }
 
+            if (responseConferenceIQ != null)
+                conference.describeChannelBundles(responseConferenceIQ);
+        }
 
         if (responseConferenceIQ != null)
         {
@@ -862,59 +909,10 @@ public class Videobridge implements StatsGenerator
         return responseConferenceIQ;
     }
 
-    /**
-     * Start to send statistics.
-     */
-    private void startStatistics()
+    public void handleIQResponse(org.jivesoftware.smack.packet.IQ response)
+        throws Exception
     {
-        StatsManager statsManager
-            = ServiceUtils.getService(bundleContext,
-                StatsManager.class);
-        if(statsManager != null)
-        {
-            ConfigurationService config
-                = ServiceUtils.getService(bundleContext,
-                                          ConfigurationService.class);
-
-            String transport
-                = config.getString(STATISTICS_TRANSPORT, DEFAULT_STAT_TRANSPORT);
-
-            statsInterval
-                = config.getInt(STATISTICS_INTERVAL, DEFAULT_STAT_INTERVAL);
-
-            statsManager.addStat(this, VideobridgeStatistics.getStatistics());
-
-            if(STAT_TRANSPORT_COLIBRI.equals(transport))
-            {
-                statsManager.start(new ColibriStatsTransport(this), this,
-                    statsInterval);
-            }
-            else if(STAT_TRANSPORT_PUBSUB.equals(transport))
-            {
-                String service = config.getString(PUBSUB_SERVICE);
-                String node = config.getString(PUBSUB_NODE);
-                if(service != null && node != null)
-                {
-                    statsManager.start(
-                        new PubsubStatsTransport(this, service, node),
-                        this, statsInterval);
-                }
-                else
-                {
-                    logger.error("No configuration options for "
-                        + "PubSub service and node are found.");
-                }
-            }
-            else
-            {
-                logger.error("Unknown statistics transport is specified.");
-            }
-        }
-        else
-        {
-            logger.error("Stat manager is not started.");
-        }
-
+        PubSubPublisher.handleIQResponse(response);
     }
 
     /**
@@ -926,15 +924,22 @@ public class Videobridge implements StatsGenerator
     void start(final BundleContext bundleContext)
         throws Exception
     {
-        ConfigurationService config
-            = ServiceUtils.getService(bundleContext,
-                                      ConfigurationService.class);
+        ConfigurationService cfg
+            = ServiceUtils2.getService(
+                    bundleContext,
+                    ConfigurationService.class);
 
         this.defaultProcessingOptions
-            = config.getInt(DEFAULT_OPTIONS_PROPERTY_NAME, 0);
+            = (cfg == null)
+                ? 0
+                : cfg.getInt(DEFAULT_OPTIONS_PROPERTY_NAME, 0);
 
-        logd("Default videobridge processing options: 0x"
+        if (logger.isDebugEnabled())
+        {
+            logger.debug(
+                    "Default videobridge processing options: 0x"
                         + Integer.toHexString(defaultProcessingOptions));
+        }
 
         ProviderManager providerManager = ProviderManager.getInstance();
 
@@ -973,6 +978,11 @@ public class Videobridge implements StatsGenerator
                 CandidatePacketExtension.ELEMENT_NAME,
                 RawUdpTransportPacketExtension.NAMESPACE,
                 candidatePacketExtensionProvider);
+        providerManager.addExtensionProvider(
+                RtcpmuxPacketExtension.ELEMENT_NAME,
+                IceUdpTransportPacketExtension.NAMESPACE,
+                new DefaultPacketExtensionProvider<RtcpmuxPacketExtension>(
+                        RtcpmuxPacketExtension.class));
 
         // DTLS-SRTP <fingerprint>
         providerManager.addExtensionProvider(
@@ -984,33 +994,30 @@ public class Videobridge implements StatsGenerator
 
         // PubSub
         providerManager.addIQProvider(
-            PubSubElementType.PUBLISH.getElementName(),
-            PubSubElementType.PUBLISH.getNamespace().getXmlns(),
-            new PubSubProvider());
+                PubSubElementType.PUBLISH.getElementName(),
+                PubSubElementType.PUBLISH.getNamespace().getXmlns(),
+                new PubSubProvider());
 
         // TODO Packet logging for ice4j is not supported at this time.
         StunStack.setPacketLogger(null);
 
         // Make all ice4j properties system properties.
 
-        if (config != null)
+        if (cfg != null)
         {
-            List<String> ice4jPropertyNames =
-                    config.getPropertyNamesByPrefix("org.ice4j.", false);
+            List<String> ice4jPropertyNames
+                = cfg.getPropertyNamesByPrefix("org.ice4j.", false);
 
-            if (ice4jPropertyNames != null && ice4jPropertyNames.size() != 0)
+            if (ice4jPropertyNames != null && !ice4jPropertyNames.isEmpty())
             {
                 for (String propertyName : ice4jPropertyNames)
                 {
-                    String propertyValue = config.getString(propertyName);
+                    String propertyValue = cfg.getString(propertyName);
 
                     // we expect the getString to return either null or a
                     // non-empty String object.
-                    if (propertyValue == null)
-                        continue;
-
-                    System.setProperty(propertyName,
-                            propertyValue);
+                    if (propertyValue != null)
+                        System.setProperty(propertyName, propertyValue);
                 }
             }
         }
@@ -1021,25 +1028,15 @@ public class Videobridge implements StatsGenerator
         {
             HostCandidateHarvester.initializeInterfaceFilters();
         }
-        catch (Exception e){
-            logger.warn("There were errors during host " +
-                    "candidate interface filters initialization.", e);
+        catch (Exception e)
+        {
+            logger.warn(
+                    "There were errors during host candidate interface filters"
+                        + " initialization.",
+                    e);
         }
 
         this.bundleContext = bundleContext;
-
-        boolean isStatsEnabled = config.getBoolean(ENABLE_STATISTICS, false);
-        if(isStatsEnabled)
-        {
-            if(getComponents().isEmpty())
-            {
-                bundleContext.addServiceListener(serviceListener);
-            }
-            else
-            {
-                startStatistics();
-            }
-        }
     }
 
     /**
@@ -1051,105 +1048,6 @@ public class Videobridge implements StatsGenerator
     void stop(BundleContext bundleContext)
         throws Exception
     {
-        this.bundleContext.removeServiceListener(serviceListener);
         this.bundleContext = null;
-
-        StatsManager statsManager
-            = ServiceUtils.getService(bundleContext,
-                StatsManager.class);
-
-        if(statsManager != null)
-        {
-            statsManager.removeStat(this);
-        }
-    }
-
-    /**
-     * Returns the <tt>ConfigurationService</tt> used by this
-     * <tt>Videobridge</tt>.
-     *
-     * @return the <tt>ConfigurationService</tt> used by this
-     * <tt>Videobridge</tt>.
-     */
-    ConfigurationService getConfigurationService()
-    {
-        BundleContext bundleContext = getBundleContext();
-
-        if (bundleContext != null)
-        {
-            return ServiceUtils.getService(bundleContext,
-                                           ConfigurationService.class);
-        }
-
-        return null;
-    }
-
-    @Override
-    public void generateStatistics(Statistics stats)
-    {
-        int audioChannels = 0, videoChannels = 0, conferences = 0, endpoints = 0;
-        long packets = 0, packetsLost = 0, bytesRecived = 0, bytesSent = 0;
-
-        for(Conference conference : getConferences())
-        {
-            for(Content content : conference.getContents())
-            {
-                if(MediaType.AUDIO.equals(content.getMediaType()))
-                {
-                     audioChannels += content.getChannelCount();
-                }
-                else if(MediaType.VIDEO.equals(content.getMediaType()))
-                {
-                    videoChannels += content.getChannelCount();
-                }
-                for(Channel channel : content.getChannels())
-                {
-                    if(!(channel instanceof RtpChannel))
-                        continue;
-                    RtpChannel rtpChannel = (RtpChannel) channel;
-                    packets += rtpChannel.getLastPacketsNB();
-                    packetsLost += rtpChannel.getLastPacketsLostNB();
-                    bytesRecived += rtpChannel.getNBReceivedBytes();
-                    bytesSent += rtpChannel.getNBSentBytes();
-                }
-            }
-            conferences++;
-            endpoints += conference.getEndpointsCount();
-        }
-
-        double packetLostPercent = 0;
-        if(packets > 0)
-        {
-            packetLostPercent = ((double)packetsLost)/packets;
-        }
-
-        DecimalFormat formater = new DecimalFormat("#.#####");
-
-        stats.setStat(VideobridgeStatistics.VIDEOBRIDGESTATS_RTP_LOSS,
-            formater.format(packetLostPercent));
-
-        stats.setStat(VideobridgeStatistics.VIDEOBRIDGESTATS_BITRATE_DOWNLOAD,
-            formater.format(VideobridgeStatistics.calculateBitRate(
-                bytesRecived, statsInterval)));
-
-        stats.setStat(VideobridgeStatistics.VIDEOBRIDGESTATS_BITRATE_UPLOAD,
-            formater.format(VideobridgeStatistics.calculateBitRate(
-                bytesSent, statsInterval)));
-
-        stats.setStat(VideobridgeStatistics.VIDEOBRIDGESTATS_NUMBEROFTHREADS,
-            ManagementFactory.getThreadMXBean().getThreadCount());
-
-        stats.setStat(
-            VideobridgeStatistics.VIDEOBRIDGESTATS_NUMBEROFPARTICIPANTS,
-            endpoints);
-
-        stats.setStat(VideobridgeStatistics.VIDEOBRIDGESTATS_AUDIOCHANNELS,
-            audioChannels);
-
-        stats.setStat(VideobridgeStatistics.VIDEOBRIDGESTATS_VIDEOCHANNELS,
-            videoChannels);
-
-        stats.setStat(VideobridgeStatistics.VIDEOBRIDGESTATS_CONFERENCES,
-            conferences);
     }
 }

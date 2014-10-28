@@ -94,26 +94,24 @@ final class IQUtils
         throws Exception
     {
         Element element = iq.getChildElement();
-        org.jivesoftware.smack.packet.IQ smackIQ = null;
+        IQProvider iqProvider;
 
-        IQProvider iqProvider = null;
-        if(element != null)
+        if (element == null)
         {
-            iqProvider = (IQProvider)
-                ProviderManager.getInstance().getIQProvider(
-                        element.getName(),
-                        element.getNamespaceURI());
+            iqProvider = null;
         }
         else
-            smackIQ = new org.jivesoftware.smack.packet.IQ()
-            {
+        {
+            iqProvider
+                = (IQProvider)
+                    ProviderManager.getInstance().getIQProvider(
+                            element.getName(),
+                            element.getNamespaceURI());
+        }
 
-                @Override
-                public String getChildElementXML()
-                {
-                    return "";
-                }
-            };
+        IQ.Type type = iq.getType();
+        org.jivesoftware.smack.packet.IQ smackIQ = null;
+        org.jivesoftware.smack.packet.XMPPError smackError = null;
 
         if (iqProvider != null || iq.getError() != null)
         {
@@ -139,55 +137,59 @@ final class IQUtils
             if (XmlPullParser.START_TAG == eventType)
             {
                 String name = parser.getName();
+
                 if ("iq".equals(name))
                 {
-                    eventType = parser.next();
-                    if (XmlPullParser.START_TAG == eventType)
+                    do
                     {
-                        if("error".equals(parser.getName()))
+                        eventType = parser.next();
+                        name = parser.getName();
+                        if (XmlPullParser.START_TAG == eventType)
                         {
-                            org.jivesoftware.smack.packet.XMPPError error
-                                = PacketParserUtils.parseError(parser);
-                            if(smackIQ == null)
+                            // 7. An IQ stanza of type "error" MAY include the
+                            // child element contained in the associated "get"
+                            // or "set" and MUST include an <error/> child.
+                            if (IQ.Type.error.equals(type)
+                                    && "error".equals(name))
                             {
-                                smackIQ
-                                    = new org.jivesoftware.smack.packet.IQ()
-                                    {
-
-                                        @Override
-                                        public String getChildElementXML()
-                                        {
-                                            return "";
-                                        }
-                                    };
+                                smackError
+                                    = PacketParserUtils.parseError(parser);
                             }
-                            smackIQ.setError(error);
-                        }
-                        else
-                        {
-                            smackIQ = iqProvider.parseIQ(parser);
-
-                            if (smackIQ != null)
+                            else if (smackIQ == null && iqProvider != null)
                             {
-                                eventType = parser.getEventType();
-                                if (XmlPullParser.END_TAG != eventType)
+                                smackIQ = iqProvider.parseIQ(parser);
+                                if (smackIQ != null
+                                        && XmlPullParser.END_TAG
+                                                != parser.getEventType())
                                 {
                                     throw new IllegalStateException(
-                                            Integer.toString(eventType)
-                                                + " != XmlPullParser.END_TAG");
+                                        Integer.toString(eventType)
+                                            + " != XmlPullParser.END_TAG");
                                 }
                             }
                         }
+                        else if ((XmlPullParser.END_TAG == eventType
+                                        && "iq".equals(name))
+                                || (smackIQ != null && smackError != null)
+                                || XmlPullParser.END_DOCUMENT == eventType)
+                        {
+                            break;
+                        }
                     }
-                    else
+                    while (true);
+
+                    eventType = parser.getEventType();
+                    if (XmlPullParser.END_TAG != eventType)
                     {
                         throw new IllegalStateException(
                                 Integer.toString(eventType)
-                                    + " != XmlPullParser.START_TAG");
+                                    + " != XmlPullParser.END_TAG");
                     }
                 }
                 else
+                {
                     throw new IllegalStateException(name + " != iq");
+                }
             }
             else
             {
@@ -197,19 +199,45 @@ final class IQUtils
             }
         }
 
+        // 6. An IQ stanza of type "result" MUST include zero or one child
+        // elements.
+        // 7. An IQ stanza of type "error" MAY include the child element
+        // contained in the associated "get" or "set" and MUST include an
+        // <error/> child.
+        if (smackIQ == null
+                && (IQ.Type.error.equals(type) || IQ.Type.result.equals(type)))
+        {
+            smackIQ
+                = new org.jivesoftware.smack.packet.IQ()
+                {
+                    @Override
+                    public String getChildElementXML()
+                    {
+                        return "";
+                    }
+                };
+        }
+
         if (smackIQ != null)
         {
+            // from
             org.xmpp.packet.JID fromJID = iq.getFrom();
 
             if (fromJID != null)
                 smackIQ.setFrom(fromJID.toString());
+            // id
             smackIQ.setPacketID(iq.getID());
 
+            // to
             org.xmpp.packet.JID toJID = iq.getTo();
 
             if (toJID != null)
                 smackIQ.setTo(toJID.toString());
-            smackIQ.setType(convert(iq.getType()));
+            // type
+            smackIQ.setType(convert(type));
+
+            if (smackError != null)
+                smackIQ.setError(smackError);
         }
 
         return smackIQ;

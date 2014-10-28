@@ -8,7 +8,6 @@ package org.jitsi.videobridge;
 
 import java.beans.*;
 import java.io.*;
-import java.lang.ref.*;
 import java.net.*;
 import java.util.*;
 
@@ -26,12 +25,11 @@ import org.jitsi.impl.neomedia.rtp.translator.*;
 import org.jitsi.impl.neomedia.transform.zrtp.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.service.neomedia.device.*;
-import org.jitsi.service.neomedia.event.*;
 import org.jitsi.service.neomedia.format.*;
 import org.jitsi.service.neomedia.recording.*;
+import org.jitsi.util.*;
 import org.jitsi.util.event.*;
 import org.jitsi.videobridge.xmpp.*;
-import org.json.simple.*;
 
 /**
  * Represents channel in the terms of Jitsi Videobridge.
@@ -43,6 +41,17 @@ public class RtpChannel
     extends Channel
     implements PropertyChangeListener
 {
+    /**
+     * The <tt>Logger</tt> used by the <tt>RtpChannel</tt> class and its
+     * instances to print debug information.
+     */
+    private static final Logger logger = Logger.getLogger(RtpChannel.class);
+
+    /**
+     * An empty array of received synchronization source identifiers (SSRCs).
+     * Explicitly defined to reduce allocations and, consequently, the effects
+     * of garbage collection.
+     */
     private static final long[] NO_RECEIVE_SSRCS = new long[0];
 
     /**
@@ -64,23 +73,15 @@ public class RtpChannel
      * The speech activity of the <tt>Endpoint</tt>s in the multipoint
      * conference in which this <tt>Channel</tt> is participating.
      */
-    private ConferenceSpeechActivity conferenceSpeechActivity;
+    protected final ConferenceSpeechActivity conferenceSpeechActivity;
 
     /**
-     * The <tt>CsrcAudioLevelListener</tt> instance which is set on
-     * <tt>AudioMediaStream</tt> via
-     * {@link AudioMediaStream#setCsrcAudioLevelListener(
-     * CsrcAudioLevelListener)} in order to receive the audio levels of the
-     * contributing sources.
+     * Holds the <tt>RtpChannelDatagramFilter</tt> instances (if any) used by
+     * this channel. The filter for RTP is at index 0, the filter for RTCP at
+     * index 1.
      */
-    private CsrcAudioLevelListener csrcAudioLevelListener;
-
-    /**
-     * The ID of this <tt>Channel</tt> (which is unique within the list of
-     * <tt>Channel</tt>s listed in {@link #content} while this instance is
-     * listed there as well).
-     */
-    private final String id;
+    private final RtpChannelDatagramFilter[] datagramFilters
+            = new RtpChannelDatagramFilter[2];
 
     /**
      * The local synchronization source identifier (SSRC) to be pre-announced.
@@ -111,24 +112,16 @@ public class RtpChannel
     private long lastKnownSentBytes = 0;
 
     /**
-     * The maximum number of video RTP stream to be sent from Jitsi Videobridge
-     * to the endpoint associated with this video <tt>Channel</tt>.
+     * The <tt>PropertyChangeListener</tt> which listens to
+     * <tt>PropertyChangeEvent</tt>s.
      */
-    private Integer lastN;
+    private final PropertyChangeListener propertyChangeListener
+        = new WeakReferencePropertyChangeListener(this);
 
     /**
-     * The <tt>Endpoint</tt>s in the multipoint conference in which this
-     * <tt>Channel</tt> is participating ordered by
-     * {@link #conferenceSpeechActivity} and used by this <tt>Channel</tt> for
-     * the support of {@link #lastN}.
+     * Contains the payload type numbers configured for this channel.
      */
-    private List<WeakReference<Endpoint>> lastNEndpoints;
-
-    /**
-     * The <tt>Object</tt> which synchronizes the access to
-     * {@link #lastNEndpoints}.
-     */
-    private final Object lastNSyncRoot = new Object();
+    int[] receivePTs = new int[0];
 
     /**
      * The list of RTP SSRCs received on this <tt>Channel</tt>. An element at
@@ -136,7 +129,7 @@ public class RtpChannel
      * index specifies the time in milliseconds when the SSRC was last seen (in
      * order to enable timing out SSRCs).
      */
-    private long[] receiveSSRCs = NO_RECEIVE_SSRCS;
+    long[] receiveSSRCs = NO_RECEIVE_SSRCS;
 
     /**
      * The type of RTP-level relay (in the terms specified by RFC 3550
@@ -154,14 +147,9 @@ public class RtpChannel
     private final MediaStream stream;
 
     /**
-     * The <tt>SimpleAudioLevelListener</tt> instance which is set on
-     * <tt>AudioMediaStream</tt> via
-     * {@link AudioMediaStream#setStreamAudioLevelListener(
-     * SimpleAudioLevelListener)} in order to have the audio levels of the
-     * contributing sources calculated and to end enable the functionality of
-     * {@link #lastN}.
+     * Whether {@link #stream} has been closed.
      */
-    private SimpleAudioLevelListener streamAudioLevelListener;
+    private boolean streamClosed = false;
 
     /**
      * The <tt>PropertyChangeListener</tt> which listens to changes of the
@@ -195,33 +183,31 @@ public class RtpChannel
      * @param id the ID of the new instance. It is expected to be unique within
      * the list of <tt>Channel</tt>s listed in <tt>content</tt> while the new
      * instance is listed there as well.
+     * @param channelBundleId the ID of the channel-bundle this
+     * <tt>RtpChannel</tt> is to be a part of (or <tt>null</tt> if no it is
+     * not to be a part of a channel-bundle).
      * @throws Exception if an error occurs while initializing the new instance
      */
-    public RtpChannel(Content content, String id)
+    public RtpChannel(Content content, String id, String channelBundleId)
         throws Exception
     {
-        super(content);
-
-        if (id == null)
-            throw new NullPointerException("id");
-
-        this.id = id;
+        super(content, id, channelBundleId);
 
         MediaService mediaService = getMediaService();
         MediaType mediaType = getContent().getMediaType();
 
         stream
             = mediaService.createMediaStream(
-                    null,
-                    mediaType,
-                    mediaService.createSrtpControl(SrtpControlType.DTLS_SRTP));
+                null,
+                mediaType,
+                getDtlsControl());
         /*
          * Add the PropertyChangeListener to the MediaStream prior to performing
          * further initialization so that we do not miss changes to the values
          * of properties we may be interested in.
          */
         stream.addPropertyChangeListener(streamPropertyChangeListener);
-        stream.setName(this.id);
+        stream.setName(getID());
         stream.setProperty(RtpChannel.class.getName(), this);
 
         /*
@@ -229,7 +215,7 @@ public class RtpChannel
          * synchronization source identifier (SSRC), which Jitsi Videobridge
          * pre-announces.
          */
-        initialLocalSSRC = new Random().nextInt();
+        initialLocalSSRC = Videobridge.RANDOM.nextInt();
 
         conferenceSpeechActivity
             = getContent().getConference().getSpeechActivity();
@@ -240,7 +226,7 @@ public class RtpChannel
              * and will unregister itself from the conference sooner or later.
              */
              conferenceSpeechActivity.addPropertyChangeListener(
-                    new WeakReferencePropertyChangeListener(this));
+                     propertyChangeListener);
         }
 
         touch();
@@ -352,7 +338,7 @@ public class RtpChannel
      * accepted for further processing within Jitsi Videobridge or
      * <tt>false</tt> to reject/drop it
      */
-    private boolean acceptDataInputStreamDatagramPacket(DatagramPacket p)
+    protected boolean acceptDataInputStreamDatagramPacket(DatagramPacket p)
     {
         InetAddress dataAddr = streamTarget.getDataAddress();
         int dataPort = streamTarget.getDataPort();
@@ -557,8 +543,18 @@ public class RtpChannel
     void askForKeyframes()
     {
         int[] receiveSSRCs = getReceiveSSRCs();
+        askForKeyframes(receiveSSRCs);
+    }
 
-        if (receiveSSRCs.length != 0)
+    /**
+     * Asks this <tt>Channel</tt> to request keyframes in the RTP video streams
+     * that it receives.
+     *
+     * @param receiveSSRCs the SSRCs to request an FIR for.
+     */
+    public void askForKeyframes(int[] receiveSSRCs)
+    {
+        if (receiveSSRCs != null && receiveSSRCs.length != 0)
         {
             RTCPFeedbackMessageSender rtcpFeedbackMessageSender
                 = getContent().getRTCPFeedbackMessageSender();
@@ -574,9 +570,14 @@ public class RtpChannel
     @Override
     protected void closeStream()
     {
-        stream.setProperty(Channel.class.getName(), null);
-        removeStreamListeners();
-        stream.close();
+        if (!streamClosed)
+        {
+            stream.setProperty(Channel.class.getName(), null);
+            removeStreamListeners();
+            stream.close();
+
+            streamClosed = true;
+        }
     }
 
     /**
@@ -591,8 +592,7 @@ public class RtpChannel
     @Override
     public void describe(ColibriConferenceIQ.ChannelCommon commonIq)
     {
-        ColibriConferenceIQ.Channel iq
-            = (ColibriConferenceIQ.Channel) commonIq;
+        ColibriConferenceIQ.Channel iq = (ColibriConferenceIQ.Channel) commonIq;
 
         /*
          * FIXME The attribute rtp-level-relay-type/Channel property
@@ -606,12 +606,11 @@ public class RtpChannel
          */
         iq.setRTPLevelRelayType(getRTPLevelRelayType());
 
-        super.describe(commonIq);
+        super.describe(iq);
 
         iq.setDirection(stream.getDirection());
 
-        iq.setID(getID());
-        iq.setLastN(lastN);
+        iq.setLastN(null);
 
         long initialLocalSSRC = getInitialLocalSSRC();
 
@@ -640,58 +639,30 @@ public class RtpChannel
     }
 
     /**
-     * Gets the <tt>CsrcAudioLevelListener</tt> instance which is set on
-     * <tt>AudioMediaStream</tt> via
-     * {@link AudioMediaStream#setCsrcAudioLevelListener(
-     * CsrcAudioLevelListener)} in order to receive the audio levels of the
-     * contributing sources.
-     *
-     * @return the <tt>CsrcAudioLevelListener</tt> instance
+     * Gets the <tt>RtpChannelDatagramFilter</tt> that accepts RTP (if
+     * <tt>rtcp</tt> is false) or RTCP (if <tt>rtcp</tt> is true) packets for
+     * this <tt>RtpChannel</tt>.
+     * @param rtcp whether to return the filter for RTP or RTCP packets.
+     * @return the <tt>RtpChannelDatagramFilter</tt> that accepts RTP (if
+     * <tt>rtcp</tt> is false) or RTCP (if <tt>rtcp</tt> is true) packets for
+     * this <tt>RtpChannel</tt>.
      */
-    private CsrcAudioLevelListener getCsrcAudioLevelListener()
+    RtpChannelDatagramFilter getDatagramFilter(boolean rtcp)
     {
-        if (csrcAudioLevelListener == null)
+        RtpChannelDatagramFilter datagramFilter;
+        int index = rtcp ? 1 : 0;
+
+        synchronized (datagramFilters)
         {
-            csrcAudioLevelListener
-                = new CsrcAudioLevelListener()
-                {
-                    @Override
-                    public void audioLevelsReceived(long[] levels)
-                    {
-                        streamAudioLevelsReceived(levels);
-                    }
-                };
+            datagramFilter = datagramFilters[index];
+            if (datagramFilter == null)
+            {
+                datagramFilters[index]
+                    = datagramFilter
+                        = new RtpChannelDatagramFilter(this, rtcp);
+            }
         }
-        return csrcAudioLevelListener;
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    protected DtlsControl getDtlsControl()
-    {
-        SrtpControl srtpControl = stream.getSrtpControl();
-
-        return
-            (srtpControl instanceof DtlsControl)
-                ? (DtlsControl) srtpControl
-                : null;
-    }
-
-    /**
-     * Gets the ID of this <tt>Channel</tt> (which is unique within the list of
-     * <tt>Channel</tt> listed in {@link #content} while this instance is listed
-     * there as well).
-     *
-     * @return the ID of this <tt>Channel</tt> (which is unique within the list
-     * of <tt>Channel</tt> listed in {@link #content} while this instance is
-     * listed there as well)
-     */
-    @Override
-    public final String getID()
-    {
-        return id;
+        return datagramFilter;
     }
 
     /**
@@ -719,6 +690,10 @@ public class RtpChannel
      * Returns the number of lost packets for this channel since last time the
      * method is called.
      *
+     * Note: {@link org.jitsi.videobridge.stats.VideobridgeStatistics} uses this
+     * method and it relies on the fact that the method is not called from
+     * anywhere else. This should probably be refactored.
+     *
      * @return the number of lost packets since last time the method is called.
      */
     public long getLastPacketsLostNB()
@@ -740,6 +715,11 @@ public class RtpChannel
     /**
      * Returns the number of packets that are sent or received for this channel
      * since last time the method is called.
+     *
+     * Note: {@link org.jitsi.videobridge.stats.VideobridgeStatistics} uses this
+     * method and it relies on the fact that the method is not called from
+     * anywhere else. This should probably be refactored.
+     *
      * @return  the number of packets that are sent or received since last time
      * the method is called.
      */
@@ -760,11 +740,26 @@ public class RtpChannel
     }
 
     /**
+     * Returns a <tt>MediaService</tt> implementation (if any).
+     *
+     * @return a <tt>MediaService</tt> implementation (if any).
+     */
+    private MediaService getMediaService()
+    {
+        return getContent().getMediaService();
+    }
+
+    /**
      * Returns the number of received bytes since the last time the
      * method was called.
+     *
+     * Note: {@link org.jitsi.videobridge.stats.VideobridgeStatistics} uses this
+     * method and it relies on the fact that the method is not called from
+     * anywhere else. This should probably be refactored.
+     *
      * @return the number of received bytes.
      */
-	public long getNBReceivedBytes()
+    public long getNBReceivedBytes()
     {
         long bytes = 0;
         long newBytes = stream.getMediaStreamStats().getNbReceivedBytes();
@@ -777,9 +772,14 @@ public class RtpChannel
         return bytes;
     }
 
-	/**
+    /**
      * Returns the number of sent bytes since the last time the
      * method was called.
+     *
+     * Note: {@link org.jitsi.videobridge.stats.VideobridgeStatistics} uses this
+     * method and it relies on the fact that the method is not called from
+     * anywhere else. This should probably be refactored.
+     *
      * @return the number of sent bytes.
      */
     public long getNBSentBytes()
@@ -795,16 +795,6 @@ public class RtpChannel
         }
 
         return bytes;
-    }
-
-    /**
-     * Returns a <tt>MediaService</tt> implementation (if any).
-     *
-     * @return a <tt>MediaService</tt> implementation (if any)
-     */
-    private MediaService getMediaService()
-    {
-        return getContent().getMediaService();
     }
 
     /**
@@ -852,33 +842,6 @@ public class RtpChannel
     }
 
     /**
-     * Gets the <tt>SimpleAudioLevelListener</tt> instance which is set on
-     * <tt>AudioMediaStream</tt> via
-     * {@link AudioMediaStream#setStreamAudioLevelListener(
-     * SimpleAudioLevelListener)} in order to have the audio levels of the
-     * contributing sources calculated and to enable the functionality of
-     * {@link #lastN}.
-     *
-     * @return the <tt>SimpleAudioLevelListener</tt> instance
-     */
-    private SimpleAudioLevelListener getStreamAudioLevelListener()
-    {
-        if (streamAudioLevelListener == null)
-        {
-            streamAudioLevelListener
-                = new SimpleAudioLevelListener()
-                {
-                    @Override
-                    public void audioLevelChanged(int level)
-                    {
-                        streamAudioLevelChanged(level);
-                    }
-                };
-        }
-        return streamAudioLevelListener;
-    }
-
-    /**
      * Returns the <tt>MediaStream</tt> which this <tt>Channel</tt> adapts to
      * the terms of Jitsi Videobridge and which adapts this <tt>Channel</tt>
      * to the terms of <tt>neomedia</tt>.
@@ -892,215 +855,22 @@ public class RtpChannel
 
     /**
      * Determines whether a specific <tt>Channel</tt> is within the set of
-     * <tt>Channel</tt>s limitted by {@link #lastN} i.e. whether the RTP video
+     * <tt>Channel</tt>s limited by <tt>lastN</tt> i.e. whether the RTP video
      * streams of the specified channel are to be sent to the remote endpoint of
      * this <tt>Channel</tt>.
      *
-     * @param channel
-     * @return
+     * @param channel the <tt>Channel</tt> to be checked whether it is within
+     * the set of <tt>Channel<tt>s limited by <tt>lastN</tt> i.e. whether its
+     * RTP streams are to be sent to the remote endpoint of this
+     * <tt>Channel</tt>
+     * @return <tt>true</tt> if the RTP streams of <tt>channel</tt> are to be
+     * sent to the remote endpoint of this <tt>Channel</tt>; otherwise,
+     * <tt>false</tt>. The implementation of the <tt>RtpChannel</tt> class
+     * always returns <tt>true</tt>.
      */
     public boolean isInLastN(Channel channel)
     {
-        Integer lastNInteger = this.lastN;
-
-        if (lastNInteger == null)
-            return true;
-
-        int lastNInt = lastNInteger.intValue();
-
-        if (lastNInt < 0)
-            return true;
-
-        Endpoint channelEndpoint = channel.getEndpoint();
-
-        if (channelEndpoint == null)
-            return true;
-
-        ConferenceSpeechActivity conferenceSpeechActivity
-            = this.conferenceSpeechActivity;
-
-        if (conferenceSpeechActivity == null)
-            return true;
-        if (lastNInt == 0)
-            return false;
-
-        Endpoint thisEndpoint = getEndpoint();
-        boolean inLastN = false;
-
-        synchronized (lastNSyncRoot)
-        {
-            if (lastNEndpoints == null)
-            {
-                List<Endpoint> endpoints
-                    = conferenceSpeechActivity.getEndpoints();
-
-                lastNEndpoints
-                    = new ArrayList<WeakReference<Endpoint>>(endpoints.size());
-                for (Endpoint endpoint : endpoints)
-                    lastNEndpoints.add(new WeakReference<Endpoint>(endpoint));
-            }
-            if (lastNEndpoints != null)
-            {
-                int n = 0;
-
-                for (WeakReference<Endpoint> wr : lastNEndpoints)
-                {
-                    Endpoint e = wr.get();
-
-                    if (e != null)
-                    {
-                        if (e.equals(thisEndpoint))
-                        {
-                            continue;
-                        }
-                        else if (e.equals(channelEndpoint))
-                        {
-                            inLastN = true;
-                            break;
-                        }
-                    }
-
-                    ++n;
-                    if (n >= lastNInt)
-                        break;
-                }
-            }
-        }
-        return inLastN;
-    }
-
-    /**
-     * Notifies this instance that the list of <tt>Endpoint</tt>s defined by
-     * {@link #lastN} has changed.
-     *
-     * @param endpointsEnteringLastN the <tt>Endpoint</tt>s which are entering
-     * the list of <tt>Endpoint</tt>s defined by <tt>lastN</tt>
-     */
-    private void lastNEndpointsChanged(List<Endpoint> endpointsEnteringLastN)
-    {
-        Integer lastNInteger = this.lastN;
-
-        if (lastNInteger == null)
-            return;
-
-        int lastNInt = lastNInteger.intValue();
-
-        if (lastNInt < 0)
-            return;
-
-        Endpoint endpoint = getEndpoint();
-
-        if (endpoint == null)
-            return;
-
-        // Represent the list of Endpoints defined by lastN in JSON format.
-        StringBuilder lastNEndpointsStr = new StringBuilder();
-
-        synchronized (lastNSyncRoot)
-        {
-            if ((lastNEndpoints != null) && !lastNEndpoints.isEmpty())
-            {
-                int n = 0;
-
-                for (WeakReference<Endpoint> wr : lastNEndpoints)
-                {
-                    Endpoint e = wr.get();
-
-                    if (e != null)
-                    {
-                        if (e.equals(endpoint))
-                        {
-                            continue;
-                        }
-                        else
-                        {
-                            if (lastNEndpointsStr.length() != 0)
-                                lastNEndpointsStr.append(',');
-                            lastNEndpointsStr.append('"');
-                            lastNEndpointsStr.append(
-                                    JSONValue.escape(e.getID()));
-                            lastNEndpointsStr.append('"');
-                        }
-                    }
-
-                    ++n;
-                    if (n >= lastNInt)
-                        break;
-                }
-            }
-        }
-
-        // colibriClass
-        StringBuilder msg
-            = new StringBuilder(
-                    "{\"colibriClass\":\"LastNEndpointsChangeEvent\"");
-
-        // lastNEndpoints
-        msg.append(",\"lastNEndpoints\":[");
-        msg.append(lastNEndpointsStr);
-        msg.append(']');
-
-        // endpointsEnteringLastN
-        if ((endpointsEnteringLastN != null)
-                && !endpointsEnteringLastN.isEmpty())
-        {
-            StringBuilder endpointEnteringLastNStr = new StringBuilder();
-
-            for (Endpoint e : endpointsEnteringLastN)
-            {
-                if (endpointEnteringLastNStr.length() != 0)
-                    endpointEnteringLastNStr.append(',');
-                endpointEnteringLastNStr.append('"');
-                endpointEnteringLastNStr.append(
-                        JSONValue.escape(e.getID()));
-                endpointEnteringLastNStr.append('"');
-            }
-            if (endpointEnteringLastNStr.length() != 0)
-            {
-                msg.append(",\"endpointsEnteringLastN\":[");
-                msg.append(endpointEnteringLastNStr);
-                msg.append(']');
-            }
-        }
-
-        msg.append('}');
-        endpoint.sendMessageOnDataChannel(msg.toString());
-    }
-
-    /**
-     * Gets the index of a specific <tt>Endpoint</tt> in a specific list of
-     * <tt>lastN</tt> <tt>Endpoint</tt>s.
-     *
-     * @param endpoints the list of <tt>Endpoint</tt>s into which to look for
-     * <tt>endpoint</tt>
-     * @param lastN the number of <tt>Endpoint</tt>s in <tt>endpoint</tt>s to
-     * look through
-     * @param endpoint the <tt>Endpoint</tt> to find within <tt>lastN</tt>
-     * elements of <tt>endpoints</tt>
-     * @return the <tt>lastN</tt> index of <tt>endpoint</tt> in
-     * <tt>endpoints</tt> or <tt>-1</tt> if <tt>endpoint</tt> is not within the
-     * <tt>lastN</tt> elements of <tt>endpoints</tt>
-     */
-    private int lastNIndexOf(
-            List<Endpoint> endpoints,
-            int lastN,
-            Endpoint endpoint)
-    {
-        Endpoint thisEndpoint = getEndpoint();
-        int n = 0;
-
-        for (Endpoint e : endpoints)
-        {
-            if (e.equals(thisEndpoint))
-                continue;
-            else if (e.equals(endpoint))
-                return n;
-
-            ++n;
-            if (n >= lastN)
-                break;
-        }
-        return -1;
+        return true;
     }
 
     /**
@@ -1109,8 +879,7 @@ public class RtpChannel
      * {@link MediaStream#start()}. For example, <tt>MediaStream</tt> may be
      * started only after a <tt>StreamConnector</tt> has been set on it and this
      * <tt>Channel</tt> may be able to provide a <tt>StreamConnector</tt> only
-     * after {@link #wrapupConnectivityEstablishment(TransportManager)} has
-     * completed on {@link #transportManager}.
+     * after the transport manager has completed the connectivity establishment.
      *
      * @throws IOException if anything goes wrong while starting <tt>stream</tt>
      */
@@ -1119,7 +888,7 @@ public class RtpChannel
         throws IOException
     {
         // connector
-        StreamConnector connector = createStreamConnector();
+        StreamConnector connector = getStreamConnector();
 
         if (connector == null)
             return;
@@ -1165,35 +934,17 @@ public class RtpChannel
             if (RTPLevelRelayType.MIXER.equals(getRTPLevelRelayType()))
                 stream.setSSRCFactory(new SSRCFactoryImpl(initialLocalSSRC));
 
-            /*
-             * Start the SrtpControl of the MediaStream. As far as our
-             * experience with Jitsi goes, the SrtpControl is started prior to
-             * the MediaStream there.
-             */
-            SrtpControl srtpControl = stream.getSrtpControl();
-
-            if (srtpControl != null)
-            {
-                if (srtpControl instanceof DtlsControl)
-                {
-                    DtlsControl dtlsControl = (DtlsControl) srtpControl;
-
-                    dtlsControl.setSetup(
-                            isInitiator()
-                                ? DtlsControl.Setup.PASSIVE
-                                : DtlsControl.Setup.ACTIVE);
-                }
-                srtpControl.start(content.getMediaType());
-            }
-
             stream.start();
         }
 
-        logd(
-                "Direction of channel " + getID() + " of content "
-                    + content.getName() + " of conference "
-                    + content.getConference().getID() + " is "
-                    + stream.getDirection() + ".");
+        if (logger.isTraceEnabled())
+        {
+            logger.trace(
+                    "Direction of channel " + getID() + " of content "
+                        + content.getName() + " of conference "
+                        + content.getConference().getID() + " is "
+                        + stream.getDirection() + ".");
+        }
 
         touch(); // It seems this Channel is still active.
     }
@@ -1257,10 +1008,28 @@ public class RtpChannel
     @Override
     protected void onEndpointChanged(Endpoint oldValue, Endpoint newValue)
     {
+        super.onEndpointChanged(oldValue, newValue);
+
         if (oldValue != null)
             oldValue.removeChannel(this);
         if (newValue != null)
             newValue.addChannel(this);
+    }
+
+    /**
+     * Notifies this instance that a specific <tt>List</tt> of payload types was
+     * set on this instance. Allows extenders to override.
+     *
+     * @param payloadTypes the <tt>List</tt> of payload types which was set on
+     * this instance and which is the cause of the notification
+     * @param googleChrome <tt>true</tt> if it looks like Google Chrome (in
+     * distinction with Jitsi) is the remote endpoint based on
+     * <tt>payloadTypes</tt>; otherwise, <tt>false</tt> 
+     */
+    protected void payloadTypesSet(
+            List<PayloadTypePacketExtension> payloadTypes,
+            boolean googleChrome)
+    {
     }
 
     /**
@@ -1351,32 +1120,12 @@ public class RtpChannel
      * exceptions; otherwise, the <tt>stream</tt> will not be closed.
      * </p>
      */
-    private void removeStreamListeners()
+    protected void removeStreamListeners()
     {
         try
         {
             stream.removePropertyChangeListener(
                 streamPropertyChangeListener);
-
-            if (stream instanceof AudioMediaStream)
-            {
-                AudioMediaStream audioStream = (AudioMediaStream) stream;
-                CsrcAudioLevelListener csrcAudioLevelListener
-                    = this.csrcAudioLevelListener;
-                SimpleAudioLevelListener streamAudioLevelListener
-                    = this.streamAudioLevelListener;
-
-                if (csrcAudioLevelListener != null)
-                {
-                    audioStream.setCsrcAudioLevelListener(
-                        csrcAudioLevelListener);
-                }
-                if (streamAudioLevelListener != null)
-                {
-                    audioStream.setStreamAudioLevelListener(
-                        streamAudioLevelListener);
-                }
-            }
         }
         catch (Throwable t)
         {
@@ -1385,6 +1134,20 @@ public class RtpChannel
             else if (t instanceof ThreadDeath)
                 throw (ThreadDeath) t;
         }
+    }
+
+    /**
+     * Notifies this instance that the value of the <tt>rtpLevelRelayType</tt>
+     * property of this instance changed from a specific old value to a specific
+     * new value. Allows extenders to override.
+     *
+     * @param oldValue the old value of the <tt>rtpLevelRelayType</tt> property
+     * @param newValue the new value of the <tt>rtpLevelRelayType</tt> property
+     */
+    protected void rtpLevelRelayTypeChanged(
+            RTPLevelRelayType oldValue,
+            RTPLevelRelayType newValue)
+    {
     }
 
     /**
@@ -1408,15 +1171,20 @@ public class RtpChannel
             byte[] buffer, int offset, int length,
             Channel source)
     {
-        boolean accept = true;
+        return true;
+    }
 
-        if (data
-                && (source != null)
-                && MediaType.VIDEO.equals(getContent().getMediaType()))
-        {
-            accept = isInLastN(source);
-        }
-        return accept;
+    /**
+     * Notifies this <tt>RtpChannel</tt> that its associated
+     * <tt>SctpConnection</tt> has become ready i.e. connected to the remote
+     * peer and operational.
+     *
+     * @param endpoint the <tt>Endpoint</tt> which is the source of the
+     * notification and through which an <tt>SctpConnection</tt> is associated
+     * with this <tt>RtpChannel</tt>
+     */
+    void sctpConnectionReady(Endpoint endpoint)
+    {
     }
 
     /**
@@ -1447,9 +1215,8 @@ public class RtpChannel
      */
     public void setLastN(Integer lastN)
     {
-        this.lastN = lastN;
-
-        touch(); // It seems this Channel is still active.
+        // The attribute/functionality last-n is defined/effective for video
+        // channels only.
     }
 
     /**
@@ -1472,6 +1239,7 @@ public class RtpChannel
 
             if (mediaService != null)
             {
+                int payloadTypeCount = payloadTypes.size();
                 /*
                  * TODO We will try to recognize Google Chrome (in distinction
                  * with Jitsi) acting as the remote endpoint in order to use
@@ -1481,19 +1249,25 @@ public class RtpChannel
                  */
                 boolean googleChrome = false;
 
-                for (PayloadTypePacketExtension payloadType : payloadTypes)
+                receivePTs = new int[payloadTypeCount];
+                for (int i = 0; i < payloadTypeCount; i++)
                 {
+                    PayloadTypePacketExtension payloadType
+                        = payloadTypes.get(i);
+
+                    receivePTs[i] = payloadType.getID();
+
                     MediaFormat mediaFormat
                         = JingleUtils.payloadTypeToMediaFormat(
                                 payloadType,
                                 mediaService,
                                 null);
 
-                    String name = payloadType.getName();
                     if (mediaFormat == null)
                     {
                         if (!googleChrome
-                                && "iSAC".equalsIgnoreCase(name))
+                                && "iSAC".equalsIgnoreCase(
+                                        payloadType.getName()))
                         {
                             googleChrome = true;
                         }
@@ -1506,35 +1280,7 @@ public class RtpChannel
                     }
                 }
 
-                if (googleChrome && (stream instanceof AudioMediaStream))
-                {
-                    /*
-                     * TODO Use RTPExtension.SSRC_AUDIO_LEVEL_URN instead of
-                     * RTPExtension.CSRC_AUDIO_LEVEL_URN while we do not support
-                     * the negotiation of RTP header extension IDs.
-                     */
-                    URI uri;
-
-                    try
-                    {
-                        uri = new URI(RTPExtension.SSRC_AUDIO_LEVEL_URN);
-                    }
-                    catch (URISyntaxException e)
-                    {
-                        uri = null;
-                    }
-                    if (uri != null)
-                    {
-                        stream.addRTPExtension((byte) 1, new RTPExtension(uri));
-                        /*
-                         * Feed the client-to-mixer audio levels into the
-                         * algorithm which detects/identifies the
-                         * active/dominant speaker.
-                         */
-                        ((AudioMediaStream) stream).setCsrcAudioLevelListener(
-                            getCsrcAudioLevelListener());
-                    }
-                }
+                payloadTypesSet(payloadTypes, googleChrome);
             }
         }
 
@@ -1558,7 +1304,11 @@ public class RtpChannel
 
         if (this.rtpLevelRelayType == null)
         {
+            RTPLevelRelayType oldValue = null;
+
             this.rtpLevelRelayType = rtpLevelRelayType;
+
+            RTPLevelRelayType newValue = getRTPLevelRelayType();
 
             /*
              * If the RTP-level relay to be used for this Channel is a mixer,
@@ -1567,30 +1317,12 @@ public class RtpChannel
              * is a translator, then the stream will not have a MediaDevice and
              * will have an RTPTranslator.
              */
-            switch (getRTPLevelRelayType())
+            switch (newValue)
             {
             case MIXER:
-                Content content = getContent();
-                MediaDevice device = content.getMixer();
+                MediaDevice device = getContent().getMixer();
 
                 stream.setDevice(device);
-
-                if (MediaType.AUDIO.equals(content.getMediaType()))
-                {
-                    /*
-                     * Allow the Jitsi Videobridge server to send the audio
-                     * levels of the contributing sources to the telephony
-                     * conference participants.
-                     */
-                    List<RTPExtension> rtpExtensions
-                        = device.getSupportedExtensions();
-
-                    if (rtpExtensions.size() == 1)
-                        stream.addRTPExtension((byte) 1, rtpExtensions.get(0));
-
-                    ((AudioMediaStream) stream).setStreamAudioLevelListener(
-                            getStreamAudioLevelListener());
-                }
 
                 /*
                  * It is necessary to start receiving media in order to
@@ -1609,6 +1341,7 @@ public class RtpChannel
                 throw new IllegalStateException("rtpLevelRelayType");
             }
 
+            rtpLevelRelayTypeChanged(oldValue, newValue);
         }
         else if (!this.rtpLevelRelayType.equals(rtpLevelRelayType))
         {
@@ -1637,161 +1370,9 @@ public class RtpChannel
      */
     List<Endpoint> speechActivityEndpointsChanged(List<Endpoint> endpoints)
     {
-        List<Endpoint> endpointsEnteringLastN = null;
-        Endpoint thisEndpoint = getEndpoint();
-        boolean lastNEndpointsChanged = false;
-
-        synchronized (lastNSyncRoot)
-        {
-            // Determine which Endpoints are entering the list of lastN.
-            Integer lastNInteger = this.lastN;
-            int lastNInt
-                = (lastNInteger == null) ? -1 : lastNInteger.intValue();
-
-            if (lastNInt > 0)
-            {
-                endpointsEnteringLastN = new ArrayList<Endpoint>(lastNInt);
-                // At most the first lastN are entering the list of lastN.
-                for (Endpoint e : endpoints)
-                {
-                    if (!e.equals(thisEndpoint))
-                    {
-                        endpointsEnteringLastN.add(e);
-                        if (endpointsEnteringLastN.size() >= lastNInt)
-                            break;
-                    }
-                }
-                if ((lastNEndpoints == null) || lastNEndpoints.isEmpty())
-                {
-                    if (!endpointsEnteringLastN.isEmpty())
-                        lastNEndpointsChanged = true;
-                }
-                else
-                {
-                    /*
-                     * Some of these first lastN are already in the list of
-                     * lastN.
-                     */
-                    int n = 0;
-
-                    for (WeakReference<Endpoint> wr : lastNEndpoints)
-                    {
-                        Endpoint e = wr.get();
-
-                        if (e != null)
-                        {
-                            if (e.equals(thisEndpoint))
-                            {
-                                continue;
-                            }
-                            else
-                            {
-                                endpointsEnteringLastN.remove(e);
-                                if (lastNIndexOf(endpoints, lastNInt, e) < 0)
-                                    lastNEndpointsChanged = true;
-                            }
-                        }
-
-                        ++n;
-                        if (n >= lastNInt)
-                            break;
-                    }
-                }
-            }
-
-            // Remember the Endpoints for the purposes of lastN.
-            lastNEndpoints
-                = new ArrayList<WeakReference<Endpoint>>(endpoints.size());
-            for (Endpoint endpoint : endpoints)
-                lastNEndpoints.add(new WeakReference<Endpoint>(endpoint));
-        }
-
-        // Notify about changes in the list of lastN.
-        if (lastNEndpointsChanged)
-            lastNEndpointsChanged(endpointsEnteringLastN);
-
-        // Request keyframes from the Enpoints entering the list of lastN.
-        return endpointsEnteringLastN;
-    }
-
-    /**
-     * Notifies this instance about a change in the audio level of the (remote)
-     * endpoint/conference participant associated with this <tt>Channel</tt>.
-     *
-     * @param level the new/current audio level of the (remote)
-     * endpoint/conference participant associated with this <tt>Channel</tt>
-     */
-    private void streamAudioLevelChanged(int level)
-    {
-        /*
-         * Whatever, the Jitsi Videobridge is not interested in the audio
-         * levels. However, an existing/non-null streamAudioLevelListener has to
-         * be set on an AudioMediaStream in order to have the audio levels of
-         * the contributing sources calculated at all.
-         */
-    }
-
-    /**
-     * Notifies this instance that {@link #stream} has received the audio levels
-     * of the contributors to this <tt>Channel</tt>.
-     *
-     * @param levels a <tt>long</tt> array in which the elements at the even
-     * indices specify the CSRC IDs and the elements at the odd indices
-     * specify the respective audio levels
-     */
-    private void streamAudioLevelsReceived(long[] levels)
-    {
-        if (levels != null)
-        {
-            /*
-             * Forward the audio levels of the contributors to this Channel to
-             * the active/dominant speaker detection/identification algorithm.
-             */
-            int[] receiveSSRCs = getReceiveSSRCs();
-
-            if (receiveSSRCs.length != 0)
-            {
-                /*
-                 * The SSRCs are at the even indices, their audio levels at the
-                 * immediately subsequent odd indices.
-                 */
-                for (int i = 0, count = levels.length / 2; i < count; i++)
-                {
-                    int i2 = i * 2;
-                    long ssrc = levels[i2];
-                    /*
-                     * The contributing SSRCs may not all be from sources
-                     * associated with this Channel and we're only interested in
-                     * the latter here.
-                     */
-                    boolean isReceiveSSRC = false;
-
-                    for (int receiveSSRC : receiveSSRCs)
-                    {
-                        if (ssrc == (0xFFFFFFFFL & receiveSSRC))
-                        {
-                            isReceiveSSRC = true;
-                            break;
-                        }
-                    }
-                    if (isReceiveSSRC)
-                    {
-                        ConferenceSpeechActivity conferenceSpeechActivity
-                            = this.conferenceSpeechActivity;
-
-                        if (conferenceSpeechActivity != null)
-                        {
-                            int level = (int) levels[i2 + 1];
-
-                            conferenceSpeechActivity.levelChanged(
-                                    this,
-                                    ssrc,
-                                    level);
-                        }
-                    }
-                }
-            }
-        }
+        // The attribute/functionality last-n is defined/effective for video
+        // channels only.
+        return null;
     }
 
     /**
@@ -1854,10 +1435,21 @@ public class RtpChannel
                 }
                 if (datagramPacketFilter != null)
                 {
-                    ((RTPConnectorInputStream) newValue)
+                    ((RTPConnectorInputStream<?>) newValue)
                         .addDatagramPacketFilter(datagramPacketFilter);
                 }
             }
         }
     }
+
+    /**
+     * Enables or disables the adaptive lastN functionality.
+     *
+     * Does nothing, allows extenders to implement.
+     *
+     * @param adaptiveLastN <tt>true</tt> to enabled and <tt>false</tt> to
+     * disable adaptive lastN.
+     */
+    public void setAdaptiveLastN(boolean adaptiveLastN)
+    {}
 }

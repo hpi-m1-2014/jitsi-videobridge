@@ -6,22 +6,20 @@
  */
 package org.jitsi.videobridge.osgi;
 
-import net.java.sip.communicator.util.*;
+import java.util.regex.*;
 
 import org.jitsi.service.configuration.*;
-import org.jitsi.util.Logger;
+import org.jitsi.util.*;
 import org.osgi.framework.*;
 
 /**
- * Implements a <tt>BundleActivator</tt> for <tt>OSGi</tt> which starts and
- * stops it in a <tt>BundleContext</tt>.
- * <p>
- * <b>Warning</b>: The class <tt>OSGiBundleActivator</tt> is to be considered
- * internal, its access modifier is public in order to allow the OSGi framework
- * to find it by name and instantiate it.
+ * FIXME: add some logging to ConfigurationServiceImpl instead of:
+ * Implements a <tt>BundleActivator</tt> for <tt>OSGi</tt> which prints out
+ * configuration properties.
  * </p>
  *
  * @author Lyubomir Marinov
+ * @author Pawel Domas
  */
 public class OSGiBundleActivator
     implements BundleActivator
@@ -51,18 +49,31 @@ public class OSGiBundleActivator
             if (bundleContext != null)
             {
                 ConfigurationService cfg
-                    = ServiceUtils.getService(
+                    = ServiceUtils2.getService(
                             bundleContext,
                             ConfigurationService.class);
 
                 if (cfg != null)
                 {
+                    /*
+                     * Do not print the values of properties with names which
+                     * mention the word password.
+                     */
+                    Pattern exclusion
+                        = Pattern.compile(
+                                "passw(or)?d",
+                                Pattern.CASE_INSENSITIVE);
+
                     for (String p : cfg.getAllPropertyNames())
                     {
                         Object v = cfg.getProperty(p);
 
                         if (v != null)
+                        {
+                            if (exclusion.matcher(p).find())
+                                v = "**********";
                             logger.info(p + "=" + v);
+                        }
                     }
                 }
             }
@@ -92,8 +103,6 @@ public class OSGiBundleActivator
         throws Exception
     {
         logConfigurationServiceProperties(bundleContext);
-
-        OSGi.start(bundleContext);
     }
 
     /**
@@ -106,6 +115,6 @@ public class OSGiBundleActivator
     public void stop(BundleContext bundleContext)
         throws Exception
     {
-        OSGi.stop(bundleContext);
+
     }
 }

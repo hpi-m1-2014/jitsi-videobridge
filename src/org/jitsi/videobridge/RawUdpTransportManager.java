@@ -35,6 +35,11 @@ public class RawUdpTransportManager
         = Logger.getLogger(RawUdpTransportManager.class);
 
     /**
+     * The single <tt>Channel</tt> in this instance.
+     */
+    private final Channel channel;
+
+    /**
      * The generation of the candidates produced by this Jingle transport.
      */
     private final int generation;
@@ -64,7 +69,10 @@ public class RawUdpTransportManager
     public RawUdpTransportManager(Channel channel)
         throws IOException
     {
-        super(channel);
+        super();
+
+        this.channel = channel;
+        addChannel(channel);
 
         streamConnector = createStreamConnector();
         /*
@@ -74,6 +82,21 @@ public class RawUdpTransportManager
         generation = 0;
         rtpCandidateID = generateCandidateID();
         rtcpCandidateID = generateCandidateID();
+
+        // streamConnector is ready, let the channel start its stream (it
+        // will have to implement latching itself)
+        channel.transportConnected();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * RawUdpTransportManager only supports a single channel.
+     */
+    @Override
+    public boolean addChannel(Channel c)
+    {
+        return getChannels().isEmpty() ? super.addChannel(c) : false;
     }
 
     /**
@@ -86,6 +109,24 @@ public class RawUdpTransportManager
 
         if (streamConnector != null)
             streamConnector.close();
+    }
+
+    /**
+     * {@inheritDoc}
+     * Make sure that {@link #close()} is called.
+     */
+    @Override
+    public boolean close(Channel channel)
+    {
+        if (channel == this.channel)
+        {
+            super.close(channel);
+            channel.transportClosed();
+            close();
+
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -105,7 +146,6 @@ public class RawUdpTransportManager
          * Determine the local InetAddress the new StreamConnector is to attempt
          * to bind to.
          */
-        Channel channel = getChannel();
         BundleContext bundleContext = channel.getBundleContext();
         NetworkAddressManagerService nams
             = ServiceUtils.getService(
@@ -236,7 +276,7 @@ public class RawUdpTransportManager
     @Override
     protected void describe(IceUdpTransportPacketExtension pe)
     {
-        StreamConnector streamConnector = getStreamConnector();
+        StreamConnector streamConnector = getStreamConnector(channel);
 
         // RTP
         {
@@ -272,9 +312,19 @@ public class RawUdpTransportManager
 
     /**
      * {@inheritDoc}
+     * RawUdpTransportManager does not implement DTLS.
      */
     @Override
-    public StreamConnector getStreamConnector()
+    public DtlsControl getDtlsControl(Channel channel)
+    {
+        return null;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public StreamConnector getStreamConnector(Channel channel)
     {
         return streamConnector;
     }
@@ -287,7 +337,7 @@ public class RawUdpTransportManager
      * consequently, does not learn the remote addresses and requires latching.
      */
     @Override
-    public MediaStreamTarget getStreamTarget()
+    public MediaStreamTarget getStreamTarget(Channel channel)
     {
         return null;
     }
@@ -308,20 +358,8 @@ public class RawUdpTransportManager
      * <tt>false</tt> because it does not establish connectivity.
      */
     @Override
-    public boolean startConnectivityEstablishment(
+    public void startConnectivityEstablishment(
             IceUdpTransportPacketExtension transport)
-    {
-         return false;
-    }
-
-    /**
-     * {@inheritDoc}
-     *
-     * The implementation of <tt>RawUdpTransportManager</tt> does nothing
-     * because it does not establish connectivity.
-     */
-    @Override
-    public void wrapupConnectivityEstablishment()
     {
     }
 }

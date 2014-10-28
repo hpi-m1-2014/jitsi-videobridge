@@ -1,3 +1,9 @@
+/*
+ * Jitsi Videobridge, OpenSource video conferencing.
+ *
+ * Distributable under LGPL license.
+ * See terms of license at gnu.org.
+ */
 package org.jitsi.videobridge.rtcp;
 
 import net.sf.fmj.media.rtp.*;
@@ -6,10 +12,11 @@ import org.jitsi.impl.neomedia.rtp.translator.*;
 import org.jitsi.service.neomedia.*;
 
 /**
- * Created by gp on 22/07/14.
+ * @author George Politis
  */
+@Deprecated
 public class HighestQualityBridgeRTCPTerminationStrategy
-        extends BasicRTCPTerminationStrategy
+        extends BasicBridgeRTCPTerminationStrategy
 {
     /**
      * The cache processor that will be making the RTCP reports coming from
@@ -22,7 +29,7 @@ public class HighestQualityBridgeRTCPTerminationStrategy
     {
         // Uses the cache processor to make the RTCP reports.
 
-        RTPTranslator t = this.translator;
+        RTPTranslator t = this.getRTPTranslator();
         if (t == null || !(t instanceof RTPTranslatorImpl))
             return new RTCPPacket[0];
 
@@ -31,7 +38,7 @@ public class HighestQualityBridgeRTCPTerminationStrategy
         if (this.feedbackCacheProcessor == null)
         {
             this.feedbackCacheProcessor
-                    = new FeedbackCacheProcessor(feedbackCache);
+                    = new FeedbackCacheProcessor(getFeedbackCache());
 
             // TODO(gp) make percentile configurable.
             this.feedbackCacheProcessor.setPercentile(70);

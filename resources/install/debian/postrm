@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # postrm script for jitsi-videobridge
 
 set -e
@@ -8,21 +8,11 @@ set -e
 
 
 case "$1" in
-    purge|remove)
+    purge)
 
         # Clear the debconf variable
         db_purge
 
-        # stop the jitsi-videobridge
-        if [ -x /etc/init.d/jitsi-videobridge ]; then
-            invoke-rc.d jitsi-videobridge stop
-        fi
-
-        # clear user and group
-        # ensure nothing is running as jvb user
-        if ps -u jvb h; then
-            `ps -u jvb -o pid h | xargs kill`
-        fi
         # and then remove the user
         if getent passwd jvb > /dev/null ; then
             deluser jvb
@@ -32,9 +22,13 @@ case "$1" in
         if [ -d "/var/log/jitsi" ]; then
             rm -rf "/var/log/jitsi"
         fi
+
+        rm -f /etc/jitsi/videobridge/config
+        rm -rf /usr/share/jitsi-videobridge/.java
+        rm -rf /usr/share/jitsi-videobridge/.sip-communicator
     ;;
 
-    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
     ;;
 
     *)

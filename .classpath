@@ -6,7 +6,6 @@
 	<classpathentry kind="lib" path="lib/bouncycastle.jar"/>
 	<classpathentry kind="lib" path="lib/concurrentlinkedhashmap-lru.jar"/>
 	<classpathentry kind="lib" path="lib/configuration.jar"/>
-	<classpathentry kind="lib" path="lib/dns.jar"/>
 	<classpathentry kind="lib" path="lib/dnsservice.jar"/>
 	<classpathentry kind="lib" path="lib/dom4j.jar"/>
 	<classpathentry kind="lib" path="lib/fileaccess.jar"/>
@@ -27,6 +26,7 @@
 	<classpathentry kind="lib" path="lib/protocol-media.jar"/>
 	<classpathentry kind="lib" path="lib/resourcemanager.jar"/>
 	<classpathentry kind="lib" path="lib/servlet-api-3.1.jar"/>
+	<classpathentry kind="lib" path="lib/sigar.jar"/>
 	<classpathentry kind="lib" path="lib/slf4j-api.jar"/>
 	<classpathentry kind="lib" path="lib/smack.jar"/>
 	<classpathentry kind="lib" path="lib/smackx.jar"/>

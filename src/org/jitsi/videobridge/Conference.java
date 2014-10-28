@@ -9,6 +9,7 @@ package org.jitsi.videobridge;
 import java.beans.*;
 import java.io.*;
 import java.lang.ref.*;
+import java.lang.reflect.*;
 import java.text.*;
 import java.util.*;
 
@@ -29,6 +30,7 @@ import org.osgi.framework.*;
  * @author Lyubomir Marinov
  * @author Boris Grozev
  * @author Hristo Terezov
+ * @author George Politis
  */
 public class Conference
      extends PropertyChangeNotifier
@@ -49,19 +51,15 @@ public class Conference
     private static final Logger logger = Logger.getLogger(Conference.class);
 
     /**
-     * Logs a specific <tt>String</tt> at debug level.
-     *
-     * @param s the <tt>String</tt> to log at debug level
-     */
-    private static void logd(String s)
-    {
-        logger.debug(s);
-    }
-
-    /**
      * The <tt>Content</tt>s of this <tt>Conference</tt>.
      */
     private final List<Content> contents = new LinkedList<Content>();
+
+    /**
+     * An instance used to save information about the endpoints of this
+     * <tt>Conference</tt>, when media recording is enabled.
+     */
+    private EndpointRecorder endpointRecorder = null;
 
     /**
      * The <tt>Endpoint</tt>s participating in this <tt>Conference</tt>.
@@ -84,12 +82,6 @@ public class Conference
     private final String focus;
 
     /**
-     * If {@link #focus} is <tt>null</tt> the value of the last known focus is
-     * stored in this member.
-     */
-    private String lastKnownFocus;
-
-    /**
      * The (unique) identifier/ID of this instance.
      */
     private final String id;
@@ -101,23 +93,19 @@ public class Conference
      */
     private long lastActivityTime;
 
-    private final PropertyChangeListener propertyChangeListener;
+    /**
+     * If {@link #focus} is <tt>null</tt> the value of the last known focus is
+     * stored in this member.
+     */
+    private String lastKnownFocus;
 
     /**
-     * The speech activity (representation) of the <tt>Endpoint</tt>s of this
-     * <tt>Conference</tt>.
+     * The <tt>PropertyChangeListener</tt> which listens to
+     * <tt>PropertyChangeEvent</tt>s on behalf of this instance while
+     * referencing it by a <tt>WeakReference</tt>.
      */
-    private final ConferenceSpeechActivity speechActivity;
-
-    /**
-     * The <tt>Videobridge</tt> which has initialized this <tt>Conference</tt>.
-     */
-    private final Videobridge videobridge;
-
-    /**
-     * Whether media recording is currently enabled for this <tt>Conference</tt>.
-     */
-    private boolean recording = false;
+    private final PropertyChangeListener propertyChangeListener
+        = new WeakReferencePropertyChangeListener(this);
 
     /**
      * The <tt>RecorderEventHandler</tt> which is used to handle recording
@@ -126,16 +114,53 @@ public class Conference
     private RecorderEventHandlerImpl recorderEventHandler = null;
 
     /**
-     * An instance used to save information about the endpoints of this
-     * <tt>Conference</tt>, when media recording is enabled.
+     * Whether media recording is currently enabled for this <tt>Conference</tt>.
      */
-    private EndpointRecorder endpointRecorder = null;
+    private boolean recording = false;
 
     /**
      * The path to the directory into which files associated with media
      * recordings for this <tt>Conference</tt> will be stored.
      */
     private String recordingPath = null;
+
+    /**
+     * The speech activity (representation) of the <tt>Endpoint</tt>s of this
+     * <tt>Conference</tt>.
+     */
+    private final ConferenceSpeechActivity speechActivity;
+
+    /**
+     * Maps an ID of a channel-bundle to the <tt>TransportManager</tt> instance
+     * responsible for its transport.
+     */
+    private final Map<String, IceUdpTransportManager> transportManagers
+        = new HashMap<String, IceUdpTransportManager>();
+
+    /**
+     * The <tt>Videobridge</tt> which has initialized this <tt>Conference</tt>.
+     */
+    private final Videobridge videobridge;
+
+    /**
+     * The <tt>WebRtcpDataStreamListener</tt> which listens to the
+     * <tt>SctpConnection</tt>s of the <tt>Endpoint</tt>s participating in this
+     * multipoint conference in order to detect when they are ready (to fire
+     * initial events such as the current dominant speaker in this multipoint
+     * conference).
+     */
+    private final WebRtcDataStreamListener webRtcDataStreamListener
+        = new WebRtcDataStreamAdapter()
+                {
+                    /**
+                     * {@inheritDoc}
+                     */
+                    @Override
+                    public void onSctpConnectionReady(SctpConnection source)
+                    {
+                        Conference.this.sctpConnectionReady(source);
+                    }
+                };
 
     /**
      * Initializes a new <tt>Conference</tt> instance which is to represent a
@@ -164,9 +189,127 @@ public class Conference
         this.focus = focus;
         this.lastKnownFocus = focus;
 
-        propertyChangeListener = new WeakReferencePropertyChangeListener(this);
         speechActivity = new ConferenceSpeechActivity(this);
         speechActivity.addPropertyChangeListener(propertyChangeListener);
+    }
+
+    /**
+     * Broadcasts string message to al participants over default data channel.
+     *
+     * @param msg the message to be advertised across conference peers.
+     */
+    private void broadcastMessageOnDataChannels(String msg)
+    {
+        for (Endpoint endpoint : getEndpoints())
+        {
+            try
+            {
+                endpoint.sendMessageOnDataChannel(msg);
+            }
+            catch (IOException e)
+            {
+                logger.error("Failed to send message on data channel.", e);
+            }
+        }
+    }
+
+    /**
+     * Checks whether <tt>path</tt> is a valid directory for recording (creates
+     * it if necessary).
+     * @param path the path to the directory to check.
+     * @return <tt>true</tt> if the directory <tt>path</tt> can be used for
+     * media recording, <tt>false</tt> otherwise.
+     */
+    private boolean checkRecordingDirectory(String path)
+    {
+        if (path == null || "".equals(path))
+            return false;
+
+        File dir = new File(path);
+        if (!dir.exists())
+            dir.mkdir();
+        if (!dir.exists())
+            return false;
+
+        if (!dir.isDirectory() || !dir.canWrite())
+            return false;
+
+        return true;
+    }
+
+    /**
+     * Closes the {@link #transportManagers} of this <tt>Conference</tt>.
+     */
+    private void closeTransportManagers()
+    {
+        synchronized (transportManagers)
+        {
+            for (IceUdpTransportManager transportManager
+                    : transportManagers.values())
+            {
+                try
+                {
+                    transportManager.close();
+                }
+                catch (Throwable t)
+                {
+                    logger.warn(
+                            "Failed to close an IceUdpTransportManager of"
+                                + " conference " + getID() + "!",
+                            t);
+                    // The whole point of explicitly closing the
+                    // transportManagers of this Conference is to prevent memory
+                    // leaks. Hence, it does not make sense to possibly leave
+                    // TransportManagers open because a TransportManager has
+                    // failed to close.
+                    if (t instanceof InterruptedException)
+                        Thread.currentThread().interrupt();
+                    else if (t instanceof ThreadDeath)
+                        throw (ThreadDeath) t;
+                }
+            }
+        }
+    }
+
+    /**
+     * Initializes a new <tt>String</tt> to be sent over an
+     * <tt>SctpConnection</tt> in order to notify an <tt>Endpoint</tt> that the
+     * dominant speaker in this multipoint conference has changed to a specific
+     * <tt>Endpoint</tt>.
+     *
+     * @param dominantSpeaker the dominant speaker in this multipoint conference
+     * @return a new <tt>String</tt> to be sent over an <tt>SctpConnection</tt>
+     * in order to notify an <tt>Endpoint</tt> that the dominant speaker in this
+     * multipoint conference has changed to <tt>dominantSpeaker</tt>
+     */
+    private String createDominantSpeakerEndpointChangeEvent(
+            Endpoint dominantSpeaker)
+    {
+        return
+            "{\"colibriClass\":\"DominantSpeakerEndpointChangeEvent\","
+                + "\"dominantSpeakerEndpoint\":\"" + dominantSpeaker.getID()
+                + "\"}";
+    }
+
+    /**
+     * Adds the channel-bundles of this <tt>Conference</tt> as
+     * <tt>ColibriConferenceIQ.ChannelBundle</tt> instances in <tt>iq</tt>.
+     * @param iq the <tt>ColibriConferenceIQ</tt> in which to describe.
+     */
+    void describeChannelBundles(ColibriConferenceIQ iq)
+    {
+        synchronized (transportManagers)
+        {
+            for (Map.Entry<String, IceUdpTransportManager> entry
+                    : transportManagers.entrySet())
+            {
+                ColibriConferenceIQ.ChannelBundle responseBundleIQ
+                    = new ColibriConferenceIQ.ChannelBundle(entry.getKey());
+
+                entry.getValue().describe(responseBundleIQ);
+                iq.addChannelBundle(responseBundleIQ);
+            }
+        }
     }
 
     /**
@@ -201,11 +344,21 @@ public class Conference
 
             for (Channel channel : content.getChannels())
             {
-                ColibriConferenceIQ.Channel channelIQ
-                    = new ColibriConferenceIQ.Channel();
+                if (channel instanceof SctpConnection)
+                {
 
-                channel.describe(channelIQ);
-                contentIQ.addChannel(channelIQ);
+                    ColibriConferenceIQ.SctpConnection sctpConnectionIQ
+                        = new ColibriConferenceIQ.SctpConnection();
+                    channel.describe(sctpConnectionIQ);
+                    contentIQ.addSctpConnection(sctpConnectionIQ);
+                }
+                else
+                {
+                    ColibriConferenceIQ.Channel channelIQ
+                        = new ColibriConferenceIQ.Channel();
+                    channel.describe(channelIQ);
+                    contentIQ.addChannel(channelIQ);
+                }
             }
         }
     }
@@ -229,6 +382,7 @@ public class Conference
         iq.setID(getID());
     }
 
+
     /**
      * Notifies this instance that {@link #speechActivity} has identified a
      * speaker switch event in this multipoint conference and there is now a new
@@ -238,24 +392,60 @@ public class Conference
     {
         Endpoint dominantSpeaker = speechActivity.getDominantEndpoint();
 
-        logd(
-                "The dominant speaker in conference " + getID()
-                    + " is now the endpoint "
-                    + ((dominantSpeaker == null)
-                        ? "(null)"
-                        : dominantSpeaker.getID())
-                    + ".");
+        if (logger.isTraceEnabled())
+        {
+            logger.trace(
+                    "The dominant speaker in conference " + getID()
+                        + " is now the endpoint "
+                        + ((dominantSpeaker == null)
+                            ? "(null)"
+                            : dominantSpeaker.getID())
+                        + ".");
+        }
 
         if (dominantSpeaker != null)
         {
             broadcastMessageOnDataChannels(
-                    "{\"colibriClass\":\"DominantSpeakerEndpointChangeEvent\","
-                        + "\"dominantSpeakerEndpoint\":\""
-                        + dominantSpeaker.getID() + "\"}");
+                    createDominantSpeakerEndpointChangeEvent(dominantSpeaker));
 
-            if (isRecording() && recorderEventHandler != null)
+            if (isRecording() && (recorderEventHandler != null))
             {
                 recorderEventHandler.dominantSpeakerChanged(dominantSpeaker);
+            }
+        }
+    }
+
+    /**
+     * Notifies this instance that the <tt>SctpConnection</tt> of/associated
+     * with a specific <tt>Endpoint</tt> participating in this
+     * <tt>Conference</tt> has changed.
+     *
+     * @param endpoint the <tt>Endpoint</tt> participating in this
+     * <tt>Conference</tt> which has had its (associated)
+     * <tt>SctpConnection</tt> changed
+     */
+    private void endpointSctpConnectionChanged(
+            Endpoint endpoint,
+            SctpConnection oldValue, SctpConnection newValue)
+    {
+        /*
+         * We want to fire initial events (e.g. dominant speaker) over the
+         * SctpConnection as soon as it is ready.
+         */
+        if (oldValue != null)
+        {
+            oldValue.removeChannelListener(webRtcDataStreamListener);
+        }
+        if (newValue != null)
+        {
+            newValue.addChannelListener(webRtcDataStreamListener);
+            /*
+             * The SctpConnection may itself be ready already. If this is the
+             * case, then it has now become ready for this Conference.
+             */
+            if (newValue.isReady())
+            {
+                sctpConnectionReady(newValue);
             }
         }
     }
@@ -275,7 +465,6 @@ public class Conference
             else
                 expired = true;
         }
-
 
         setRecording(false);
         if (recorderEventHandler != null)
@@ -305,16 +494,29 @@ public class Conference
                             "Failed to expire content " + content.getName()
                                 + " of conference " + getID() + "!",
                             t);
-                    if (t instanceof ThreadDeath)
+                    if (t instanceof InterruptedException)
+                        Thread.currentThread().interrupt();
+                    else if (t instanceof ThreadDeath)
                         throw (ThreadDeath) t;
                 }
             }
 
-            logd(
-                    "Expired conference " + getID() + ". The total number of"
-                        + " conferences is now "
-                        + videobridge.getConferenceCount() + ", channels "
-                        + videobridge.getChannelCount() + ".");
+            // Close the transportManagers of this Conference. Normally, there
+            // will be no TransportManager left to close at this point because
+            // all Channels have expired and the last Channel to be removed from
+            // a TransportManager closes the TransportManager. However, a
+            // Channel may have expired before it has learned of its
+            // TransportManager and then the TransportManager will not close.
+            closeTransportManagers();
+
+            if (logger.isInfoEnabled())
+            {
+                logger.info(
+                        "Expired conference " + getID()
+                            + ". The total number of conferences is now "
+                            + videobridge.getConferenceCount() + ", channels "
+                            + videobridge.getChannelCount() + ".");
+            }
         }
     }
 
@@ -412,6 +614,69 @@ public class Conference
         {
             return contents.toArray(new Content[contents.size()]);
         }
+    }
+
+    /**
+     * Gets an <tt>Endpoint</tt> participating in this <tt>Conference</tt> which
+     * has a specific identifier/ID.
+     *
+     * @param id the identifier/ID of the <tt>Endpoint</tt> which is to be
+     * returned
+     * @return an <tt>Endpoint</tt> participating in this <tt>Conference</tt>
+     * which has the specified <tt>id</tt> or <tt>null</tt>
+     */
+    public Endpoint getEndpoint(String id)
+    {
+        Endpoint endpoint = null;
+        boolean changed = false;
+
+        synchronized (endpoints)
+        {
+            for (Iterator<WeakReference<Endpoint>> i = endpoints.iterator();
+                    i.hasNext();)
+            {
+                Endpoint e = i.next().get();
+                if (e == null)
+                {
+                    i.remove();
+                    changed = true;
+                }
+                else if (e.getID().equals(id))
+                {
+                    endpoint = e;
+                }
+            }
+        }
+
+        if (changed)
+            firePropertyChange(ENDPOINTS_PROPERTY_NAME, null, null);
+
+        return endpoint;
+    }
+
+    /**
+     * Returns the <tt>EndpointRecorder</tt> instance used to save the
+     * endpoints information for this <tt>Conference</tt>. Creates an instance
+     * if none exists.
+     * @return the <tt>EndpointRecorder</tt> instance used to save the
+     * endpoints information for this <tt>Conference</tt>.
+     */
+    private EndpointRecorder getEndpointRecorder()
+    {
+        if (endpointRecorder == null)
+        {
+            try
+            {
+                endpointRecorder
+                    = new EndpointRecorder(
+                            getRecordingPath() + "/endpoints.json");
+            }
+            catch (IOException ioe)
+            {
+                logger.warn("Could not create EndpointRecorder. " + ioe);
+            }
+        }
+        return endpointRecorder;
     }
 
     /**
@@ -513,6 +778,27 @@ public class Conference
     }
 
     /**
+     * Returns a <tt>MediaService</tt> implementation (if any).
+     *
+     * @return a <tt>MediaService</tt> implementation (if any)
+     */
+    MediaService getMediaService()
+    {
+        MediaService mediaService
+            = ServiceUtils.getService(getBundleContext(), MediaService.class);
+
+        /*
+         * TODO For an unknown reason, ServiceUtils2.getService fails to retrieve
+         * the MediaService implementation. In the form of a temporary
+         * workaround, get it through LibJitsi.
+         */
+        if (mediaService == null)
+            mediaService = LibJitsi.getMediaService();
+
+        return mediaService;
+    }
+
+    /**
      * Gets a <tt>Content</tt> of this <tt>Conference</tt> which has a specific
      * name. If a <tt>Content</tt> of this <tt>Conference</tt> with the
      * specified <tt>name</tt> does not exist at the time the method is invoked,
@@ -541,22 +827,27 @@ public class Conference
 
             content = new Content(this, name);
             if (isRecording())
+            {
                 content.setRecording(true, getRecordingPath());
+            }
             contents.add(content);
         }
 
-        /*
-         * The method Videobridge.getChannelCount() should better be executed
-         * outside synchronized blocks in order to reduce the risks of causing
-         * deadlocks.
-         */
-        Videobridge videobridge = getVideobridge();
+        if (logger.isInfoEnabled())
+        {
+            /*
+             * The method Videobridge.getChannelCount() should better be
+             * executed outside synchronized blocks in order to reduce the risks
+             * of causing deadlocks.
+             */
+            Videobridge videobridge = getVideobridge();
 
-        logd(
-                "Created content " + name + " of conference " + getID()
-                    + ". The total number of conferences is now "
-                    + videobridge.getConferenceCount() + ", channels "
-                    + videobridge.getChannelCount() + ".");
+            logger.info(
+                    "Created content " + name + " of conference " + getID()
+                        + ". The total number of conferences is now "
+                        + videobridge.getConferenceCount() + ", channels "
+                        + videobridge.getChannelCount() + ".");
+        }
 
         return content;
     }
@@ -617,6 +908,79 @@ public class Conference
         return endpoint;
     }
 
+    RecorderEventHandler getRecorderEventHandler()
+    {
+        if (recorderEventHandler == null)
+        {
+            Throwable t;
+
+            try
+            {
+                recorderEventHandler
+                    = new RecorderEventHandlerImpl(
+                            this,
+                            getMediaService().createRecorderEventHandlerJson(
+                                    getRecordingPath() + "/metadata.json"));
+                t = null;
+            }
+            catch (IOException ioe)
+            {
+                t = ioe;
+            }
+            catch (IllegalArgumentException iae)
+            {
+                t = iae;
+            }
+            if (t !=  null)
+                logger.warn("Could not create RecorderEventHandler. " + t);
+        }
+        return recorderEventHandler;
+    }
+
+    /**
+     * Returns the path to the directory where the media recording related
+     * files should be saved, or <tt>null</tt> if recording is not enabled
+     * in the configuration, or a recording path has not been configured.
+     *
+     * @return the path to the directory where the media recording related
+     * files should be saved, or <tt>null</tt> if recording is not enabled
+     * in the configuration, or a recording path has not been configured.
+     */
+    String getRecordingPath()
+    {
+        if (recordingPath == null)
+        {
+            ConfigurationService cfg
+                = getVideobridge().getConfigurationService();
+
+            if (cfg != null)
+            {
+                boolean recordingIsEnabled
+                        = cfg.getBoolean(
+                                Videobridge.ENABLE_MEDIA_RECORDING_PNAME,
+                                false);
+
+                if (recordingIsEnabled)
+                {
+                    String path
+                        = cfg.getString(
+                                Videobridge.MEDIA_RECORDING_PATH_PNAME,
+                                null);
+
+                    if (path != null)
+                    {
+                        this.recordingPath
+                            = path + "/"
+                                + new SimpleDateFormat("yyyy-MM-dd.HH-mm-ss.")
+                                        .format(new Date())
+                                + getID();
+                    }
+                }
+            }
+        }
+        return recordingPath;
+    }
+
     /**
      * Gets the speech activity (representation) of the <tt>Endpoint</tt>s of
      * this <tt>Conference</tt>.
@@ -624,9 +988,65 @@ public class Conference
      * @return the speech activity (representation) of the <tt>Endpoint</tt>s of
      * this <tt>Conference</tt>
      */
-    ConferenceSpeechActivity getSpeechActivity()
+    public ConferenceSpeechActivity getSpeechActivity()
     {
         return speechActivity;
+    }
+
+    /**
+     * Returns, the <tt>TransportManager</tt> instance for the channel-bundle
+     * with ID <tt>channelBundleId</tt>, or <tt>null</tt> if one doesn't exist.
+     *
+     * @param channelBundleId the ID of the channel-bundle for which to return
+     * the <tt>TransportManager</tt>.
+     * @return the <tt>TransportManager</tt> instance for the channel-bundle
+     * with ID <tt>channelBundleId</tt>, or <tt>null</tt> if one doesn't exist.
+     */
+    TransportManager getTransportManager(String channelBundleId)
+    {
+        return getTransportManager(channelBundleId, false);
+    }
+
+    /**
+     * Returns, the <tt>TransportManager</tt> instance for the channel-bundle
+     * with ID <tt>channelBundleId</tt>. If no instance exists and
+     * <tt>create</tt> is <tt>true</tt>, one will be created.
+     *
+     * @param channelBundleId the ID of the channel-bundle for which to return
+     * the <tt>TransportManager</tt>.
+     * @param create whether to create a new instance, if one doesn't exist.
+     * @return the <tt>TransportManager</tt> instance for the channel-bundle
+     * with ID <tt>channelBundleId</tt>.
+     */
+    IceUdpTransportManager getTransportManager(
+            String channelBundleId,
+            boolean create)
+    {
+        IceUdpTransportManager transportManager;
+
+        synchronized (transportManagers)
+        {
+            transportManager = transportManagers.get(channelBundleId);
+            if (transportManager == null && create && !isExpired())
+            {
+                try
+                {
+                    //FIXME: the initiator is hard-coded
+                    // We assume rtcp-mux when bundle is used, so we make only
+                    // one component.
+                    transportManager
+                        = new IceUdpTransportManager(this, true, 1);
+                }
+                catch (IOException ioe)
+                {
+                    throw new UndeclaredThrowableException(ioe);
+                }
+
+                transportManagers.put(channelBundleId, transportManager);
+            }
+        }
+
+        return transportManager;
     }
 
     /**
@@ -639,111 +1059,6 @@ public class Conference
     public final Videobridge getVideobridge()
     {
         return videobridge;
-    }
-
-    /**
-     * Notifies this instance that there was a change in the value of a property
-     * of an object in which this instance is interested.
-     *
-     * @param ev a <tt>PropertyChangeEvent</tt> which specifies the object of
-     * interest, the name of the property and the old and new values of that
-     * property
-     */
-    @Override
-    public void propertyChange(PropertyChangeEvent ev)
-    {
-        Object source = ev.getSource();
-
-        if (speechActivity == source)
-        {
-            String propertyName = ev.getPropertyName();
-
-            if (ConferenceSpeechActivity.DOMINANT_ENDPOINT_PROPERTY_NAME.equals(
-                    propertyName))
-            {
-                dominantSpeakerChanged();
-            }
-            else if (ConferenceSpeechActivity.ENDPOINTS_PROPERTY_NAME.equals(
-                    propertyName))
-            {
-                speechActivityEndpointsChanged();
-            }
-        }
-    }
-
-    private void speechActivityEndpointsChanged()
-    {
-        List<Endpoint> endpoints = null;
-
-        for (Content content : getContents())
-        {
-            if (MediaType.VIDEO.equals(content.getMediaType()))
-            {
-                Set<Endpoint> endpointsToAskForKeyframes = null;
-
-                endpoints = speechActivity.getEndpoints();
-                for (Channel channel : content.getChannels())
-                {
-                    RtpChannel rtpChannel = (RtpChannel) channel;
-
-                    List<Endpoint> channelEndpointsToAskForKeyframes
-                        = rtpChannel.speechActivityEndpointsChanged(endpoints);
-
-                    if ((channelEndpointsToAskForKeyframes != null)
-                            && !channelEndpointsToAskForKeyframes.isEmpty())
-                    {
-                        if (endpointsToAskForKeyframes == null)
-                        {
-                            endpointsToAskForKeyframes
-                                = new HashSet<Endpoint>();
-                        }
-                        endpointsToAskForKeyframes.addAll(
-                                channelEndpointsToAskForKeyframes);
-                    }
-                }
-
-                if ((endpointsToAskForKeyframes != null)
-                        && !endpointsToAskForKeyframes.isEmpty())
-                {
-                    content.askForKeyframes(endpointsToAskForKeyframes);
-                }
-            }
-        }
-    }
-
-    /**
-     * Sets the time in milliseconds of the last activity related to this
-     * <tt>Conference</tt> to the current system time.
-     */
-    public void touch()
-    {
-        long now = System.currentTimeMillis();
-
-        synchronized (this)
-        {
-            if (getLastActivityTime() < now)
-                lastActivityTime = now;
-        }
-    }
-
-    /**
-     * Broadcasts string message to al participants over default data channel.
-     *
-     * @param msg the message to be advertised across conference peers.
-     */
-    private void broadcastMessageOnDataChannels(String msg)
-    {
-        for (Endpoint endpoint : getEndpoints())
-            endpoint.sendMessageOnDataChannel(msg);
-    }
-
-    /**
-     * Sets the JID of the last known focus.
-     * @param jid the JID of the last known focus.
-     */
-    public void setLastKnownFocus(String jid)
-    {
-        lastKnownFocus = jid;
     }
 
     /**
@@ -796,6 +1111,150 @@ public class Conference
     }
 
     /**
+     * Notifies this instance that there was a change in the value of a property
+     * of an object in which this instance is interested.
+     *
+     * @param ev a <tt>PropertyChangeEvent</tt> which specifies the object of
+     * interest, the name of the property and the old and new values of that
+     * property
+     */
+    @Override
+    public void propertyChange(PropertyChangeEvent ev)
+    {
+        Object source = ev.getSource();
+
+        if (isExpired())
+        {
+            /*
+             * An expired Conference is to be treated like a null Conference
+             * i.e. it does not handle any PropertyChangeEvents. If possible,
+             * make sure that no further PropertyChangeEvents will be delivered
+             * to this Conference.
+             */
+            if (source instanceof PropertyChangeNotifier)
+            {
+                ((PropertyChangeNotifier) source).removePropertyChangeListener(
+                        propertyChangeListener);
+            }
+        }
+        else if (source == speechActivity)
+        {
+            String propertyName = ev.getPropertyName();
+
+            if (ConferenceSpeechActivity.DOMINANT_ENDPOINT_PROPERTY_NAME.equals(
+                    propertyName))
+            {
+                /*
+                 * The dominant speaker in this Conference has changed. We will
+                 * likely want to notify the Endpoints participating in this
+                 * Conference.
+                 */
+                dominantSpeakerChanged();
+            }
+            else if (ConferenceSpeechActivity.ENDPOINTS_PROPERTY_NAME.equals(
+                    propertyName))
+            {
+                speechActivityEndpointsChanged();
+            }
+        }
+        else if (source instanceof Endpoint)
+        {
+            /*
+             * We care about PropertyChangeEvents from Endpoint but only if the
+             * Endpoint in question is still participating in this Conference.
+             */
+            Endpoint endpoint = getEndpoint(((Endpoint) source).getID());
+
+            if (endpoint != null)
+            {
+                String propertyName = ev.getPropertyName();
+
+                if (Endpoint.SCTP_CONNECTION_PROPERTY_NAME.equals(propertyName))
+                {
+                    /*
+                     * The SctpConnection of/associated with an Endpoint has
+                     * changed. We may want to fire initial events over that
+                     * SctpConnection (as soon as it is ready).
+                     */
+                    SctpConnection oldValue = (SctpConnection) ev.getOldValue();
+                    SctpConnection newValue = (SctpConnection) ev.getNewValue();
+
+                    endpointSctpConnectionChanged(endpoint, oldValue, newValue);
+                }
+            }
+        }
+    }
+
+    /**
+     * Notifies this instance that a specific <tt>SctpConnection</tt> has become
+     * ready i.e. connected to a/the remote peer and operational.
+     *
+     * @param sctpConnection the <tt>SctpConnection</tt> which has become ready
+     * and is the cause of the method invocation
+     */
+    private void sctpConnectionReady(SctpConnection sctpConnection)
+    {
+        /*
+         * We want to fire initial events over the SctpConnection as soon as it
+         * is ready, we do not want to fire them multiple times i.e. every time
+         * the SctpConnection becomes ready.
+         */
+        sctpConnection.removeChannelListener(webRtcDataStreamListener);
+
+        if (!isExpired()
+                && !sctpConnection.isExpired()
+                && sctpConnection.isReady())
+        {
+            Endpoint endpoint = sctpConnection.getEndpoint();
+
+            if (endpoint != null)
+                endpoint = getEndpoint(endpoint.getID());
+            if (endpoint != null)
+            {
+                /*
+                 * It appears that this Conference, the SctpConnection and the
+                 * Endpoint are in states which allow them to fire the initial
+                 * events. 
+                 */
+                Endpoint dominantSpeaker = speechActivity.getDominantEndpoint();
+
+                if (dominantSpeaker != null)
+                {
+                    try
+                    {
+                        endpoint.sendMessageOnDataChannel(
+                                createDominantSpeakerEndpointChangeEvent(
+                                        dominantSpeaker));
+                    }
+                    catch (IOException e)
+                    {
+                        logger.error("Failed to send message on data channel.",
+                                e);
+                    }
+                }
+
+                /*
+                 * Determining the instant at which an SctpConnection associated
+                 * with an Endpoint becomes ready (i.e. connected to the remote
+                 * peer and operational) is a multi-step ordeal. The Conference
+                 * class implements the procedure so do not make other classes
+                 * implement it as well.
+                 */
+                endpoint.sctpConnectionReady(sctpConnection);
+            }
+        }
+    }
+
+    /**
+     * Sets the JID of the last known focus.
+     * @param jid the JID of the last known focus.
+     */
+    public void setLastKnownFocus(String jid)
+    {
+        lastKnownFocus = jid;
+    }
+
+    /**
      * Attempts to enable or disable media recording for this
      * <tt>Conference</tt>.
      *
@@ -810,7 +1269,13 @@ public class Conference
             if (recording)
             {
                 //try enable recording
-                logd("Starting recording for conference with id=" + getID());
+                if (logger.isDebugEnabled())
+                {
+                    logger.debug(
+                            "Starting recording for conference with id="
+                                + getID());
+                }
+
                 boolean failedToStart;
 
                 String path = getRecordingPath();
@@ -878,8 +1343,9 @@ public class Conference
                 if (failedToStart)
                 {
                     recording = false;
-                    logger.warn("Failed to start media recording for conference "
-                                        + getID());
+                    logger.warn(
+                            "Failed to start media recording for conference "
+                                + getID());
                 }
             }
 
@@ -887,7 +1353,12 @@ public class Conference
             // enable it
             if (!recording)
             {
-                logd("Stopping recording for conference with id=" + getID());
+                if (logger.isDebugEnabled())
+                {
+                    logger.debug(
+                            "Stopping recording for conference with id="
+                                + getID());
+                }
 
                 for (Content content : contents)
                 {
@@ -917,135 +1388,68 @@ public class Conference
     }
 
     /**
-     * Returns the path to the directory where the media recording related
-     * files should be saved, or <tt>null</tt> if recording is not enabled
-     * in the configuration, or a recording path has not been configured.
-     *
-     * @return the path to the directory where the media recording related
-     * files should be saved, or <tt>null</tt> if recording is not enabled
-     * in the configuration, or a recording path has not been configured.
+     * Notifies this <tt>Conference</tt> that the ordered list of
+     * <tt>Endpoint</tt>s of {@link #speechActivity} i.e. the dominant speaker
+     * history has changed.
+     * <p>
+     * This instance notifies the video <tt>Channel</tt>s about the change so
+     * that they may update their last-n lists and report to this instance which
+     * <tt>Endpoint</tt>s are to be asked for video keyframes.
+     * </p>
      */
-    String getRecordingPath()
+    private void speechActivityEndpointsChanged()
     {
-        if (recordingPath == null)
+        List<Endpoint> endpoints = null;
+
+        for (Content content : getContents())
         {
-            ConfigurationService cfg
-                    = getVideobridge().getConfigurationService();
-            if (cfg == null)
-                return null;
-            boolean recordingEnabled
-                    = cfg.getBoolean(Videobridge.ENABLE_MEDIA_RECORDING_PNAME,
-                                     false);
-            if (!recordingEnabled)
-                return null;
-            String path
-                    = cfg.getString(Videobridge.MEDIA_RECORDING_PATH_PNAME, null);
-            if (path == null)
-                return null;
+            if (MediaType.VIDEO.equals(content.getMediaType()))
+            {
+                Set<Endpoint> endpointsToAskForKeyframes = null;
 
-            this.recordingPath = path + "/"
-                    + (new SimpleDateFormat("yyyy-MM-dd.HH-mm-ss.")
-                            .format(new Date()) + getID());
+                endpoints = speechActivity.getEndpoints();
+                for (Channel channel : content.getChannels())
+                {
+                    RtpChannel rtpChannel = (RtpChannel) channel;
+
+                    List<Endpoint> channelEndpointsToAskForKeyframes
+                        = rtpChannel.speechActivityEndpointsChanged(endpoints);
+
+                    if ((channelEndpointsToAskForKeyframes != null)
+                            && !channelEndpointsToAskForKeyframes.isEmpty())
+                    {
+                        if (endpointsToAskForKeyframes == null)
+                        {
+                            endpointsToAskForKeyframes
+                                = new HashSet<Endpoint>();
+                        }
+                        endpointsToAskForKeyframes.addAll(
+                                channelEndpointsToAskForKeyframes);
+                    }
+                }
+
+                if ((endpointsToAskForKeyframes != null)
+                        && !endpointsToAskForKeyframes.isEmpty())
+                {
+                    content.askForKeyframes(endpointsToAskForKeyframes);
+                }
+            }
         }
-
-        return recordingPath;
     }
 
     /**
-     * Checks whether <tt>path</tt> is a valid directory for recording (creates
-     * it if necessary).
-     * @param path the path to the directory to check.
-     * @return <tt>true</tt> if the directory <tt>path</tt> can be used for
-     * media recording, <tt>false</tt> otherwise.
+     * Sets the time in milliseconds of the last activity related to this
+     * <tt>Conference</tt> to the current system time.
      */
-    private boolean checkRecordingDirectory(String path)
+    public void touch()
     {
-        if (path == null || "".equals(path))
-            return false;
+        long now = System.currentTimeMillis();
 
-        File dir = new File(path);
-        if (!dir.exists())
-            dir.mkdir();
-        if (!dir.exists())
-            return false;
-
-        if (!dir.isDirectory() || !dir.canWrite())
-            return false;
-
-        return true;
-    }
-
-    RecorderEventHandler getRecorderEventHandler()
-    {
-        if (recorderEventHandler == null)
+        synchronized (this)
         {
-
-            try
-            {
-                recorderEventHandler
-                        = new RecorderEventHandlerImpl(
-                        getMediaService()
-                                .createRecorderEventHandlerJson(
-                                        getRecordingPath() + "/metadata.json"));
-            }
-            catch (IOException ioe)
-            {
-                logger.warn("Could not create RecorderEventHandler. " + ioe);
-            }
-            catch (IllegalArgumentException iae)
-            {
-                logger.warn("Could not create RecorderEventHandlerImpl. " + iae);
-            }
+            if (getLastActivityTime() < now)
+                lastActivityTime = now;
         }
-
-        return recorderEventHandler;
-    }
-
-    /**
-     * Returns the <tt>EndpointRecorder</tt> instance used to save the
-     * endpoints information for this <tt>Conference</tt>. Creates an instance
-     * if none exists.
-     * @return the <tt>EndpointRecorder</tt> instance used to save the
-     * endpoints information for this <tt>Conference</tt>.
-     */
-    private EndpointRecorder getEndpointRecorder()
-    {
-        if (endpointRecorder == null)
-        {
-            try
-            {
-                endpointRecorder
-                        = new EndpointRecorder(
-                                        getRecordingPath() + "/endpoints.json");
-            }
-            catch (IOException ioe)
-            {
-                logger.warn("Could not create EndpointRecorder. " + ioe);
-            }
-        }
-
-        return endpointRecorder;
-    }
-
-    /**
-     * Returns a <tt>MediaService</tt> implementation (if any).
-     *
-     * @return a <tt>MediaService</tt> implementation (if any)
-     */
-    MediaService getMediaService()
-    {
-        MediaService mediaService
-            = ServiceUtils.getService(getBundleContext(), MediaService.class);
-
-        /*
-         * TODO For an unknown reason, ServiceUtils.getService fails to retrieve
-         * the MediaService implementation. In the form of a temporary
-         * workaround, get it through LibJitsi.
-         */
-        if (mediaService == null)
-            mediaService = LibJitsi.getMediaService();
-
-        return mediaService;
     }
 
     /**
@@ -1059,19 +1463,12 @@ public class Conference
      */
     void updateEndpoint(ColibriConferenceIQ.Endpoint colibriEndpoint)
     {
-        Endpoint endpoint = null;
         String id = colibriEndpoint.getId();
+
         if (id == null)
             return;
 
-        for (Endpoint e : getEndpoints())
-        {
-            if (id.equals(e.getID()))
-            {
-                endpoint = e;
-                break;
-            }
-        }
+        Endpoint endpoint = getEndpoint(id);
 
         if (endpoint != null)
         {
@@ -1080,88 +1477,6 @@ public class Conference
             if (isRecording() && endpointRecorder != null)
             {
                 endpointRecorder.updateEndpoint(endpoint);
-            }
-        }
-    }
-
-    /**
-     * An implementation of <tt>RecorderEventHandler</tt> which intercepts
-     * <tt>SPEAKER_CHANGED</tt> events and updates their 'ssrc' fields
-     * (which contain the SSRC of a video stream) before delegating to
-     * another underlying <tt>RecorderEventHandler</tt>.
-     * The value to use for an event's 'ssrc' field is a value found to be
-     * associated with the audio SSRC of the event (the 'audioSsrc' field).
-     */
-    private class RecorderEventHandlerImpl
-            implements RecorderEventHandler
-    {
-        private RecorderEventHandler handler;
-
-        RecorderEventHandlerImpl(RecorderEventHandler handler)
-                throws IllegalArgumentException
-        {
-            if (handler == null)
-                throw new IllegalArgumentException("handler is null");
-            this.handler = handler;
-        }
-
-        @Override
-        public boolean handleEvent(RecorderEvent event)
-        {
-            if (event.getEndpointId() == null)
-            {
-                long ssrc = event.getSsrc();
-                Endpoint endpoint
-                        = findEndpointByReceiveSSRC(ssrc, MediaType.AUDIO);
-                if (endpoint == null)
-                    endpoint = findEndpointByReceiveSSRC(ssrc, MediaType.VIDEO);
-
-                if (endpoint != null)
-                {
-                    event.setEndpointId(endpoint.getID());
-                }
-
-            }
-            return handler.handleEvent(event);
-        }
-
-        @Override
-        public void close()
-        {
-            handler.close();
-        }
-
-        /**
-         * Notifies this instance that the dominant speaker in the conference
-         * has changed.
-         * @param endpoint the <tt>Endpoint</tt> corresponding to the new
-         * dominant speaker.
-         */
-        private void dominantSpeakerChanged(Endpoint endpoint)
-        {
-            long ssrc = -1;
-
-            // find the first "video" SSRC for the new dominant endpoint
-            for (Channel c : endpoint.getChannels(MediaType.VIDEO))
-            {
-                int[] ssrcs = ((RtpChannel) c).getReceiveSSRCs();
-                if (ssrcs != null && ssrcs.length > 0)
-                {
-                    ssrc = ssrcs[0] & 0xffffffffL;
-                    break;
-                }
-            }
-
-            if (ssrc != -1)
-            {
-                RecorderEvent event = new RecorderEvent();
-                event.setType(RecorderEvent.Type.SPEAKER_CHANGED);
-                event.setMediaType(MediaType.VIDEO);
-                event.setSsrc(ssrc);
-                event.setEndpointId(endpoint.getID());
-                event.setInstant(System.currentTimeMillis());
-
-                handleEvent(event);
             }
         }
     }

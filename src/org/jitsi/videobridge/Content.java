@@ -6,6 +6,7 @@
  */
 package org.jitsi.videobridge;
 
+import java.beans.*;
 import java.io.*;
 import java.lang.ref.*;
 import java.util.*;
@@ -35,20 +36,9 @@ public class Content
     private static final Logger logger = Logger.getLogger(Content.class);
 
     /**
-     * Logs a specific <tt>String</tt> at debug level.
-     *
-     * @param s the <tt>String</tt> to log at debug level 
-     */
-    private static void logd(String s)
-    {
-        logger.debug(s);
-    }
-
-    /**
      * The <tt>Channel</tt>s of this <tt>Content</tt> mapped by their IDs.
      */
-    private final Map<String, Channel> channels
-        = new HashMap<String, Channel>();
+    private final Map<String,Channel> channels = new HashMap<String,Channel>();
 
     /**
      * The <tt>Conference</tt> which has initialized this <tt>Content</tt>.
@@ -128,13 +118,6 @@ public class Content
     private RTPTranslator rtpTranslator;
 
     /**
-     * The <tt>SctpConnection</tt>s of this <tt>Content</tt> mapped by their
-     * <tt>Endpoint</tt>s.
-     */
-    private Map<Endpoint, SctpConnection> sctpConnections
-        = new HashMap<Endpoint, SctpConnection>();
-
-    /**
      * Initializes a new <tt>Content</tt> instance which is to be a part of a
      * specific <tt>Conference</tt> and which is to have a specific name.
      *
@@ -150,6 +133,23 @@ public class Content
             throw new NullPointerException("name");
 
         this.conference = conference;
+
+        // If endpoints have changed, maybe change the RTCP termination
+        // strategy.
+        // TODO(gp) this should not always be enabled, it should be configurable
+        this.conference.addPropertyChangeListener(new PropertyChangeListener()
+        {
+            @Override
+            public void propertyChange(PropertyChangeEvent propertyChangeEvent)
+            {
+                if (propertyChangeEvent != null &&
+                        Conference.ENDPOINTS_PROPERTY_NAME
+                                .equals(propertyChangeEvent.getPropertyName()))
+                {
+                    updateRTCPTerminationStrategy();
+                }
+            }
+        });
         this.name = name;
 
         mediaType = MediaType.parseString(this.name);
@@ -200,10 +200,13 @@ public class Content
      * <tt>RtpChannel</tt> instance has an ID which is unique within the list of
      * <tt>RtpChannel</tt>s of this <tt>Content</tt>.
      *
-     * @return
+     * @param channelBundleId the ID of the channel-bundle that the created
+     * <tt>RtpChannel</tt> is to be a part of (or <tt>null</tt> if it is not to
+     * be a part of a channel-bundle).
+     * @return the created <tt>RtpChannel</tt> instance.
      * @throws Exception
      */
-    public RtpChannel createChannel()
+    public RtpChannel createRtpChannel(String channelBundleId)
         throws Exception
     {
         RtpChannel channel = null;
@@ -216,27 +219,47 @@ public class Content
             {
                 if (!channels.containsKey(id))
                 {
-                    channel = new RtpChannel(this, id);
+                    switch (getMediaType())
+                    {
+                    case AUDIO:
+                        channel = new AudioChannel(this, id, channelBundleId);
+                        break;
+                    case DATA:
+                        /*
+                         * MediaType.DATA signals an SctpConnection, not an
+                         * RtpChannel.
+                         */
+                        throw new IllegalStateException("mediaType");
+                    case VIDEO:
+                        channel = new VideoChannel(this, id, channelBundleId);
+                        break;
+                    default:
+                        channel = new RtpChannel(this, id, channelBundleId);
+                        break;
+                    }
                     channels.put(id, channel);
                 }
             }
         }
         while (channel == null);
 
-        /*
-         * The method Videobridge.getChannelCount() should better be executed
-         * outside synchronized blocks in order to reduce the risks of causing
-         * deadlocks.
-         */
-        Conference conference = getConference();
-        Videobridge videobridge = conference.getVideobridge();
+        if (logger.isInfoEnabled())
+        {
+            /*
+             * The method Videobridge.getChannelCount() should better be
+             * executed outside synchronized blocks in order to reduce the risks
+             * of causing deadlocks.
+             */
+            Conference conference = getConference();
+            Videobridge videobridge = conference.getVideobridge();
 
-        logd(
-                "Created channel " + channel.getID() + " of content "
-                    + getName() + " of conference " + conference.getID()
-                    + ". The total number of conferences is now "
-                    + videobridge.getConferenceCount() + ", channels "
-                    + videobridge.getChannelCount() + ".");
+            logger.info(
+                    "Created channel " + channel.getID() + " of content "
+                        + getName() + " of conference " + conference.getID()
+                        + ". The total number of conferences is now "
+                        + videobridge.getConferenceCount() + ", channels "
+                        + videobridge.getChannelCount() + ".");
+        }
 
         return channel;
     }
@@ -244,33 +267,34 @@ public class Content
     /**
      * Creates new <tt>SctpConnection</tt> with given <tt>Endpoint</tt> on given
      * <tt>sctpPort</tt>.
+     *
      * @param endpoint the <tt>Endpoint</tt> of <tt>SctpConnection</tt>
      * @param sctpPort remote SCTP port that will be used by new
-     *                 <tt>SctpConnection</tt>.
+     * <tt>SctpConnection</tt>.
+     * @param channelBundleId the ID of the channel-bundle that the created
+     * <tt>SctpConnection</tt> is to be a part of (or <tt>null</tt> if it is not
+     * to be a part of a channel-bundle).
      * @return new <tt>SctpConnection</tt> with given <tt>Endpoint</tt>
      * @throws Exception if an error occurs while initializing the new instance
-     * @throws IllegalArgumentException if <tt>SctpConnection</tt> already
-     *         exists for given <tt>Endpoint</tt>.
+     * @throws IllegalArgumentException if <tt>SctpConnection</tt> exists
+     * already for given <tt>Endpoint</tt>.
      */
-    public SctpConnection createSctpConnection(Endpoint endpoint, int sctpPort)
+    public SctpConnection createSctpConnection(Endpoint endpoint,
+                                               int sctpPort,
+                                               String channelBundleId)
         throws Exception
     {
-        if(this.sctpConnections.containsKey(endpoint))
-        {
-            throw new IllegalArgumentException(
-                "SctpConnection for " + endpoint.getID() + " already exists");
-        }
-
-        SctpConnection sctpConnection
-            = new SctpConnection(this, endpoint, sctpPort);
-
-        sctpConnections.put(endpoint, sctpConnection);
+        SctpConnection sctpConnection;
 
         synchronized (channels)
         {
+            String id = generateChannelID();
+
+            sctpConnection
+                = new SctpConnection(
+                        id, this, endpoint, sctpPort, channelBundleId);
             channels.put(sctpConnection.getID(), sctpConnection);
         }
-
         return sctpConnection;
     }
 
@@ -324,14 +348,17 @@ public class Content
                 rtcpFeedbackMessageSender = null;
             }
 
-            Videobridge videobridge = conference.getVideobridge();
+            if (logger.isInfoEnabled())
+            {
+                Videobridge videobridge = conference.getVideobridge();
 
-            logd(
-                    "Expired content " + getName() + " of conference "
-                        + conference.getID()
-                        + ". The total number of conferences is now "
-                        + videobridge.getConferenceCount() + ", channels "
-                        + videobridge.getChannelCount() + ".");
+                logger.info(
+                        "Expired content " + getName() + " of conference "
+                            + conference.getID()
+                            + ". The total number of conferences is now "
+                            + videobridge.getConferenceCount() + ", channels "
+                            + videobridge.getChannelCount() + ".");
+            }
         }
     }
 
@@ -599,12 +626,10 @@ public class Content
         if (mixer == null)
         {
             MediaType mediaType = getMediaType();
-            MediaDevice device;
-
-            if (MediaType.AUDIO.equals(mediaType))
-                device = new AudioSilenceMediaDevice();
-            else
-                device = null;
+            MediaDevice device
+                = MediaType.AUDIO.equals(mediaType)
+                    ? new AudioSilenceMediaDevice()
+                    : null;
 
             if (device == null)
             {
@@ -613,7 +638,9 @@ public class Content
                                 + " for " + mediaType);
             }
             else
+            {
                 mixer = getMediaService().createMixer(device);
+            }
         }
         return mixer;
     }
@@ -643,13 +670,14 @@ public class Content
         if (recorder == null)
         {
             MediaType mediaType = getMediaType();
-            if (!MediaType.VIDEO.equals(mediaType)
-                    && !MediaType.AUDIO.equals(mediaType))
-                return null;
 
-            recorder = getMediaService()
-                    .createRecorder(getRTPTranslator());
-            recorder.setEventHandler(getConference().getRecorderEventHandler());
+            if (MediaType.AUDIO.equals(mediaType)
+                    || MediaType.VIDEO.equals(mediaType))
+            {
+                recorder = getMediaService().createRecorder(getRTPTranslator());
+                recorder.setEventHandler(
+                        getConference().getRecorderEventHandler());
+            }
         }
         return recorder;
     }
@@ -659,41 +687,87 @@ public class Content
         return rtcpFeedbackMessageSender;
     }
 
+    private String rtcpTerminationStrategyFQN;
+
+    private String fallbackSrategyFQN;
+
+    public void setRTCPTerminationStrategyFQN(String strategyFQN)
+    {
+        if ((rtcpTerminationStrategyFQN == null && strategyFQN != null)
+                || (rtcpTerminationStrategyFQN != null &&
+                    !rtcpTerminationStrategyFQN.equals(strategyFQN)))
+        {
+            this.rtcpTerminationStrategyFQN = strategyFQN;
+            this.updateRTCPTerminationStrategy();
+        }
+    }
+
     /**
      * Sets the RTCP termination strategy of the <tt>rtpTranslator</tt> to the
-     * one specified in the strategyFQN parameter.
+     * one specified in the rtcpTerminationStrategyFQN parameter.
+     *
+     * TODO(gp) move this method to the Conference since the strategy is per
+     * conference.
      *
      */
-    public void setRTCPTerminationStrategyFromFQN(String strategyFQN)
+    private void updateRTCPTerminationStrategy()
     {
-        RTPTranslator translator = rtpTranslator;
-        if (translator == null
-                || !MediaType.VIDEO.equals(mediaType))
-        {
+        Conference conf = this.conference;
+
+        if (conf == null)
             return;
+
+        RTPTranslator rtpTranslator = this.rtpTranslator;
+
+        if (rtpTranslator == null)
+            return;
+
+        String strategyFQN;
+        List<Endpoint> endpoints = conf.getEndpoints();
+        /**
+         * If the conference has less than 3 participants, it switches the RTCP
+         * termination strategy to the SilentBridgeRTCPTerminationStrategy. It
+         * restores the configured RTCP termination strategy otherwise.
+         */
+        if (endpoints != null && endpoints.size() < 3)
+        {
+            strategyFQN = this.fallbackSrategyFQN;
+            if (StringUtils.isNullOrEmpty(strategyFQN))
+                strategyFQN = this.rtcpTerminationStrategyFQN;
+        }
+        else
+        {
+            strategyFQN = this.rtcpTerminationStrategyFQN;
         }
 
-        RTCPTerminationStrategy strategy;
-        if (strategyFQN != null && strategyFQN.trim().length() != 0)
+        if (StringUtils.isNullOrEmpty(strategyFQN))
+            return;
+
+        try
         {
-            try
-            {
-                Class<?> clazz = Class.forName(strategyFQN);
-                strategy = (RTCPTerminationStrategy) clazz.newInstance();
+            Class<?> clazz = Class.forName(strategyFQN);
 
-                if (strategy instanceof BasicBridgeRTCPTerminationStrategy)
-                {
-                    ((BasicBridgeRTCPTerminationStrategy) strategy)
-                            .setConference(this.conference);
-                }
+            RTCPTerminationStrategy oldStrategy
+                    = rtpTranslator.getRTCPTerminationStrategy();
+            if (clazz.isInstance(oldStrategy))
+                return;
 
-                translator.setRTCPTerminationStrategy(strategy);
-            }
-            catch (Exception e)
+            RTCPTerminationStrategy strategy
+                    = (RTCPTerminationStrategy) clazz.newInstance();
+
+            if (strategy instanceof BridgeRTCPTerminationStrategy)
             {
-                logger.error("Failed to configure the RTCP termination " +
-                        "strategy", e);
+                ((BridgeRTCPTerminationStrategy) strategy)
+                        .setConference(this.conference);
             }
+
+            rtpTranslator.setRTCPTerminationStrategy(strategy);
+        }
+        catch (Exception e)
+        {
+            logger.error(
+                    "Failed to configure the RTCP termination strategy",
+                    e);
         }
     }
 
@@ -714,10 +788,15 @@ public class Content
 
         if (cfg != null)
         {
+            String fallbackFQN = cfg.getString(
+                    Videobridge.RTCP_TERMINATION_FALLBACK_STRATEGY_PNAME, "");
+
+            setRTCPTerminationFallbackStrategyFQN(fallbackFQN);
+
             String strategyFQN = cfg.getString(
                     Videobridge.RTCP_TERMINATION_STRATEGY_PNAME, "");
 
-            setRTCPTerminationStrategyFromFQN(strategyFQN);
+            setRTCPTerminationStrategyFQN(strategyFQN);
         }
     }
 
@@ -734,7 +813,15 @@ public class Content
     {
         synchronized (rtpLevelRelaySyncRoot)
         {
-            if (rtpTranslator == null)
+            /*
+             * The expired field of Content is initially assigned true and the
+             * only possible change of the value is from true to false, never
+             * from false to true. Moreover, an existing rtpTranslator will be
+             * disposed after the change of expired from true to false.
+             * Consequently, no synchronization with respect to the access of
+             * expired is required.
+             */
+            if ((rtpTranslator == null) && !expired)
             {
                 rtpTranslator = getMediaService().createRTPTranslator();
                 if (rtpTranslator != null)
@@ -743,14 +830,13 @@ public class Content
                     if (rtpTranslator instanceof RTPTranslatorImpl)
                     {
                         RTPTranslatorImpl rtpTranslatorImpl
-                                = (RTPTranslatorImpl) rtpTranslator;
+                            = (RTPTranslatorImpl) rtpTranslator;
 
-                        initialLocalSSRC = new Random().nextInt();
+                        initialLocalSSRC = Videobridge.RANDOM.nextInt();
 
                         rtpTranslatorImpl.setLocalSSRC(initialLocalSSRC);
 
-                        MediaType mediaType = getMediaType();
-                        if (MediaType.VIDEO.equals(mediaType))
+                        if (MediaType.VIDEO.equals(getMediaType()))
                             setRTCPTerminationStrategyFromConfiguration();
 
                         rtcpFeedbackMessageSender
@@ -764,14 +850,31 @@ public class Content
 
     /**
      * Returns <tt>SctpConnection</tt> for given <tt>Endpoint</tt>.
+     *
      * @param endpoint the <tt>Endpoint</tt> of <tt>SctpConnection</tt> that
-     *                 we're looking for.
-     * @return <tt>SctpConnection</tt> for given <tt>Endpoint</tt> if any
-     *         or <tt>null</tt> otherwise.
+     * we're looking for.
+     * @return <tt>SctpConnection</tt> for given <tt>Endpoint</tt> if any or
+     * <tt>null</tt> otherwise.
      */
+    @Deprecated
     public SctpConnection getSctpConnection(Endpoint endpoint)
     {
-        return sctpConnections.get(endpoint);
+        // SCTP connection is bound to an Endpoint just after gets created
+        // (in the constructor), so expect to find it there
+        return (endpoint == null) ? null : endpoint.getSctpConnection();
+    }
+
+    /**
+     * Returns <tt>SctpConnection</tt> for given <tt>Endpoint</tt>.
+     *
+     * @param id the <tt>id</tt> of <tt>SctpConnection</tt> that we're looking
+     * for.
+     * @return <tt>SctpConnection</tt> for given <tt>Endpoint</tt> if any or
+     * <tt>null</tt> otherwise.
+     */
+    public SctpConnection getSctpConnection(String id)
+    {
+        return (SctpConnection) getChannel(id);
     }
 
     /**
@@ -839,10 +942,7 @@ public class Content
     private boolean startRecorder(Recorder recorder)
     {
         boolean started = false;
-        MediaType mediaType = getMediaType();
-        String format = null;
-        if (MediaType.AUDIO.equals(mediaType))
-            format = "mp3";
+        String format = MediaType.AUDIO.equals(getMediaType()) ? "mp3" : null;
 
         try
         {
@@ -851,12 +951,12 @@ public class Content
         }
         catch (IOException ioe)
         {
-            logd("Failed to start recorder: " + ioe);
+            logger.error("Failed to start recorder: " + ioe);
             started = false;
         }
         catch (MediaException me)
         {
-            logd("Failed to start recorder: " + me);
+            logger.error("Failed to start recorder: " + me);
             started = false;
         }
 
@@ -876,6 +976,12 @@ public class Content
             if (getLastActivityTime() < now)
                 lastActivityTime = now;
         }
+    }
+
+    public void setRTCPTerminationFallbackStrategyFQN(
+            String rtcpTerminationFallbackStrategyFQN)
+    {
+        this.fallbackSrategyFQN = rtcpTerminationFallbackStrategyFQN;
     }
 
 

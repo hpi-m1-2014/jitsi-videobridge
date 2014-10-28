@@ -49,39 +49,39 @@
 
     <!--
         if label is "build.SVN" we don't have version to update
-        the changelog with -->
+        the changelog with
     <target name="check-version">
         <condition property="version.not.numeric">
             <matches pattern="build.SVN" string="${label}"/>
         </condition>
-    </target>
+    </target>-->
 
     <!--
         Updates changelog and version. Called only when "label" is a number.
     -->
-    <target name="deb-bump-version" unless="version.not.numeric">
+    <target name="deb-bump-version">
         <!-- preparing the release folder for new build -->
         <delete dir="${debian.dir}"/>
         <mkdir dir="${debian.dir}"/>
 
         <!-- create new changelog and fill up the new version and date -->
-        <concat destfile="${debian.dir}/changelog" overwrite="true">
-            <fileset file="resources/install/debian/changelog.tmpl"/>
-            <fileset file="release/changelog"/>
-        </concat>
+        <copy file="resources/install/debian/changelog.tmpl"
+              tofile="${debian.dir}/changelog"
+              overwrite="true"/>
+
         <tstamp>
             <format property="date"
                     pattern="EEE, d MMM yyyy HH:mm:ss Z" locale="en,US"/>
         </tstamp>
         <replace file="${debian.dir}/changelog"
-                 token="Mon, 01 Jan 1970 00:00:00 +0000" value="${date}"/>
+                 token="_DATE_" value="${date}"/>
         <replace file="${debian.dir}/changelog"
-                 token="1-build.SVN" value="${label}"/>
+                 token="_VERSION_" value="${label}-1"/>
     </target>
 
     <!-- Builds the debian package. -->
     <target name="make-deb"
-            depends="make,dpkg-build-warning,check-version,deb-bump-version">
+            depends="make,dpkg-build-warning,deb-bump-version">
 
         <copy todir="${debian.dir}" includeEmptyDirs="Yes">
             <fileset dir="resources/install/debian">
@@ -108,26 +108,18 @@
         <chmod file="${debian.dir}/usr/share/jitsi-videobridge/jvb.sh"
                perm="755"/>
 
-        <!-- creating a debian archive file -->
+        <!-- creating a debian archive file
         <tar destfile="jitsi-videobridge_${label}-1.debian.tar.gz"
              basedir="${debian.release}" includes="debian/"
-             defaultexcludes="No" compression="gzip"/>
+             defaultexcludes="No" compression="gzip"/>-->
 
-        <!-- creating empty orig file -->
+        <!-- creating empty orig file
         <touch file="jitsi-videobridge"/>
         <tar destfile="release/jitsi-videobridge_${label}-1.orig.tar.gz"
              compression="gzip">
             <tarfileset file="jitsi-videobridge"/>
         </tar>
-        <delete file="jitsi-videobridge"/>
-
-        <!-- if we didn't bump the version, there is no changelog,
-            so we copy it (and prefer one from release folder) -->
-        <copy file="${debian.dir}/changelog.tmpl"
-              tofile="${debian.dir}/changelog"
-              overwrite="false" failonerror="false"/>
-        <copy file="release/changelog"
-              todir="${debian.dir}" overwrite="true" failonerror="false"/>
+        <delete file="jitsi-videobridge"/>-->
 
         <!-- and build it -->
         <exec executable="${dpkg-buildpackage}" dir="${debian.dir}/../">
@@ -139,9 +131,6 @@
             <arg value="-a${arch}"/>
         </exec>
 
-        <!-- keep the new changelog for later builds -->
-        <copy file="${debian.dir}/changelog" todir="release" overwrite="true"/>
-
         <!-- clean up the build folder -->
         <delete dir="${debian.release}"/>
 
@@ -150,7 +139,15 @@
     <target name="deb-src" depends="deb-copy-jitsi-videobridge">
 
         <unzip src="../libsrc/jitsi-android-osgi.zip"
-               dest="${debian.release}/lib/src/"/>
+               dest="${debian.release}/lib/src/jitsi-android-osgi">
+            <patternset>
+                <exclude name="**/test/**"/>
+                <exclude name="**/test-lib/**"/>
+                <exclude name="**/*.iml"/>
+                <exclude name="**/*.jar"/>
+            </patternset>
+        </unzip>
+
         <unzip src="../libsrc/tinder_src_1_2_2.zip"
                dest="${debian.release}/lib/src/">
             <patternset>
@@ -230,6 +227,8 @@ ifeq ($(DEB_HOST_ARCH),amd64)
 else
 &#009;dh_install resources/install/linux/jvb.sh usr/share/jitsi-videobridge
 endif
+&#009;chmod +x debian/jitsi-videobridge/usr/share/jitsi-videobridge/jvb.sh
+
 </echo>
 
     </target>
@@ -259,6 +258,8 @@ endif
         <symlink resource="/usr/share/java/jetty8-server.jar"
                  link="lib"/>
         <symlink resource="/usr/share/java/jetty8-util.jar"
+                 link="lib"/>
+        <symlink resource="/usr/share/java/sigar.jar"
                  link="lib"/>
 
         <mkdir dir="lib/src/jitsi-android-osgi/classes"/>
